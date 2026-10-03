@@ -1,0 +1,13 @@
+crewai==0.80.0
+mistralai==1.2.0
+langchain-mistralai
+python-dotenv==1.0.1
+yfinance==0.2.31
+pandas==2.2.2
+numpy==1.26.4
+requests==2.32.3
+streamlit==1.35.0
+setuptools==69.5.1
+packaging==23.2
+wheel
+reportlab
