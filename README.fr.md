@@ -7,8 +7,9 @@ Trois agents spécialisés analysent des actions, évaluent le risque et rédige
 un backtest walk-forward face au S&P 500.
 
 > **Règle de conception : le LLM ne calcule jamais un chiffre.** Tous les chiffres d'un rapport viennent de
-> fonctions Python testées (`src/finance.py`, `src/optimization.py`, `src/backtest.py`) exposées aux agents
-> comme outils. Le LLM interprète et rédige. Si une donnée manque, le rapport indique `donnée indisponible`.
+> fonctions Python testées (`src/finance.py`, `src/optimization.py`, `src/backtest.py`). Les sections chiffrées
+> du rapport (données, risque, allocation, backtest) sont générées par Python ; le LLM rédige seulement un
+> commentaire qualitatif qui ne doit contenir aucun chiffre. Si une donnée manque : `donnée indisponible`.
 
 ## Fonctionnement
 
@@ -23,6 +24,13 @@ un backtest walk-forward face au S&P 500.
 | Analyste de marché | `stock_analysis` | Prix, P/E, bêta, dividende, plus haut/bas 52 semaines |
 | Gestionnaire des risques | `portfolio_risk` | Volatilité, Sharpe, drawdown max, corrélations |
 | Stratège de portefeuille | `portfolio_allocation`, `portfolio_backtest` | Allocation risk-parity en actions entières, backtest des stratégies |
+
+### Garde-fous
+
+Après chaque exécution, `src/guardrails.py` valide le rapport final avec des règles déterministes et ajoute le
+résultat en pied de page : sections obligatoires présentes, chaque chiffre traçable jusqu'à une sortie d'outil,
+données manquantes signalées, allocation cohérente avec le budget, et aucun chiffre dans le commentaire du LLM.
+Les prix sont convertis en EUR avec les taux de change Yahoo, calculés en Python.
 
 ### Backtest
 
@@ -42,6 +50,10 @@ src/optimization.py     Variance minimale, Sharpe max, risk parity (SLSQP, plafo
 src/strategies.py       Stratégies : fenêtre de rendements -> poids
 src/backtest.py         Backtest walk-forward, coûts, comparaison au benchmark
 src/tools.py            Outils CrewAI (entrées/sorties yfinance + JSON pour les agents)
+src/facts.py            Exécute les outils pour collecter les chiffres du rapport
+src/report_builder.py   Génère en Python les sections chiffrées du rapport
+src/guardrails.py       Validation déterministe du rapport
+src/pipeline.py         Assemblage : chiffres + commentaire + pied de page de validation
 src/agents.py, tasks.py Agents et tâches séquentielles
 src/llm.py              Configuration du fournisseur LLM
 reports/report_pdf.py   Markdown -> PDF

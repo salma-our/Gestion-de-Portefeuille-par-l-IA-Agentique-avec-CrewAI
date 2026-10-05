@@ -7,8 +7,9 @@ Three specialised agents analyse a set of stocks, assess risk, and write an allo
 walk-forward backtest against the S&P 500.
 
 > **Design rule — the LLM never computes a number.** Every figure in a report comes from tested Python
-> functions (`src/finance.py`, `src/optimization.py`, `src/backtest.py`) exposed to the agents as tools.
-> The LLM only interprets and writes. If data is missing, the report says `donnée indisponible`.
+> functions (`src/finance.py`, `src/optimization.py`, `src/backtest.py`). The numeric sections of the report
+> (data, risk, allocation, backtest) are rendered by Python; the LLM only writes a qualitative commentary
+> that must contain no figure. If data is missing, the report says `donnée indisponible`.
 
 ## How it works
 
@@ -23,6 +24,13 @@ walk-forward backtest against the S&P 500.
 | Market Analyst | `stock_analysis` | Price, P/E, beta, dividend, 52-week range |
 | Risk Manager | `portfolio_risk` | Volatility, Sharpe, max drawdown, correlations |
 | Portfolio Strategist | `portfolio_allocation`, `portfolio_backtest` | Risk-parity allocation in whole shares, strategy backtest |
+
+### Guardrails
+
+After each run, `src/guardrails.py` validates the final report with deterministic rules and appends the
+result as a footer: required sections present, every financial number traceable to a tool output,
+missing data acknowledged, allocation consistent with the budget, and no figure in the LLM narrative.
+Prices are converted to EUR with Yahoo FX rates computed in Python.
 
 ### Backtest
 
@@ -42,6 +50,10 @@ src/optimization.py     Min variance, max Sharpe, risk parity (SLSQP, weight cap
 src/strategies.py       Strategies: window of returns -> weights
 src/backtest.py         Walk-forward backtest, costs, benchmark comparison
 src/tools.py            CrewAI tools (yfinance I/O + JSON for the agents)
+src/facts.py            Runs the tools to collect the report's numeric facts
+src/report_builder.py   Renders the numeric report sections in Python
+src/guardrails.py       Deterministic report validation
+src/pipeline.py         Report assembly: numbers + narrative + validation footer
 src/agents.py, tasks.py Agents and sequential tasks
 src/llm.py              LLM provider configuration
 reports/report_pdf.py   Markdown -> PDF
