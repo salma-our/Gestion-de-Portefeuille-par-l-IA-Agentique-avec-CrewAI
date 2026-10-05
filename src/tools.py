@@ -4,6 +4,7 @@ Uses the @tool decorator from crewai.tools
 Integrates yfinance with robust error handling and retry logic.
 """
 
+import functools
 import json
 import logging
 import time
@@ -25,6 +26,9 @@ from src.finance import (
 
 logger = logging.getLogger(__name__)
 
+# Raw outputs of every tool call in the current run; used to validate the final report.
+TOOL_OUTPUTS: list[str] = []
+
 BENCHMARK = "^GSPC"
 BACKTEST_LOOKBACK = 252
 MIN_BACKTEST_ROWS = BACKTEST_LOOKBACK + 42
@@ -38,6 +42,18 @@ FALLBACK_MSG = (
     "Report 'donnée indisponible' instead of estimating or inventing. "
     "NEVER invent metrics — better incomplete+honest than invented+false."
 )
+
+
+def _record(fn):
+    """Append the tool's raw output to TOOL_OUTPUTS (source of truth for guardrails)."""
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        output = fn(*args, **kwargs)
+        TOOL_OUTPUTS.append(output)
+        return output
+
+    return wrapper
 
 
 def _download(tickers, period: str = "1y", retries: int = 3) -> pd.DataFrame:
@@ -86,6 +102,7 @@ def _extract_close(raw, tickers):
 
 # Tool 1: Stock analysis
 @tool("stock_analysis")
+@_record
 def analyze_stock(ticker: str) -> str:
     """
     Analyze a stock ticker: current price, variations, fundamentals (P/E, dividend, market cap).
@@ -151,6 +168,7 @@ def analyze_stock(ticker: str) -> str:
 
 # Tool 2: Portfolio risk analysis
 @tool("portfolio_risk")
+@_record
 def analyze_portfolio_risk(tickers: str, period: str = "1y") -> str:
     """
     Calculate portfolio risk metrics: annual volatility, Sharpe ratio, max drawdown, correlation.
@@ -205,6 +223,7 @@ def analyze_portfolio_risk(tickers: str, period: str = "1y") -> str:
 
 # Tool 3: Optimal allocation
 @tool("portfolio_allocation")
+@_record
 def calculate_optimal_allocation(tickers: str, budget: float = 10000.0) -> str:
     """
     Calculate optimal portfolio allocation (risk-parity) based on budget and profile.
@@ -297,6 +316,7 @@ def run_backtest(
 
 # Tool 4: Backtest
 @tool("portfolio_backtest")
+@_record
 def backtest_portfolio(tickers: str, years: int = 3) -> str:
     """
     Backtest allocation strategies (equal weight, inverse volatility, min variance, max Sharpe,

@@ -113,3 +113,9 @@ def test_backtest_tool_single_ticker_skips_optimizers(offline_backtest):
 def test_backtest_tool_falls_back_on_short_history(monkeypatch):
     monkeypatch.setattr(tools, "_download", lambda *a, **k: _fake_prices())
     assert tools.backtest_portfolio.run(tickers="AAA,BBB", years=3) == tools.FALLBACK_MSG
+
+
+def test_tool_outputs_are_recorded_for_guardrails(offline):
+    tools.TOOL_OUTPUTS.clear()
+    out = tools.calculate_optimal_allocation.run(tickers="AAA,BBB", budget=5000.0)
+    assert tools.TOOL_OUTPUTS == [out]
