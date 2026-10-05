@@ -95,109 +95,43 @@ def create_tasks(
     # ─────────────────────────────────────────────
     tache_strategie = Task(
         description=f"""
-        En synthétisant l'analyse de marché et l'évaluation des risques,
-        construisez le portefeuille optimal pour l'investisseur.
+        En vous appuyant sur l'analyse de marché et l'évaluation des risques, rédigez la partie
+        QUALITATIVE du rapport destiné à l'investisseur.
 
-        Utilisez l'outil portfolio_allocation avec :
-        - tickers: "{tickers_str}"
-        - budget: {budget}
+        Utilisez les outils portfolio_allocation (tickers: "{tickers_str}", budget: {budget}) et
+        portfolio_backtest (tickers: "{tickers_str}") pour comprendre l'allocation et la
+        comparaison des stratégies.
 
-        Utilisez aussi l'outil portfolio_backtest avec :
-        - tickers: "{tickers_str}"
+        Le système génère automatiquement, à l'identique des outils, tous les tableaux chiffrés
+        (données par action, risque, allocation, cash restant, backtest). Ne les reproduisez pas.
 
-           Puis rédigez un rapport final complet et professionnel qui contiendra :
+        Rédigez en français, en markdown, EXACTEMENT ces cinq sections :
+        ### Résumé exécutif
+        ### Lecture des actions
+        (forces et faiblesses de chaque titre, exprimées en mots)
+        ### Stratégie d'investissement
+        (horizon, fréquence de rééquilibrage, conditions de renforcement et de réduction,
+        décrites qualitativement)
+        ### Risques à surveiller
+        (marché, secteur, risques propres à chaque titre)
+        ### Conclusion
+        (recommandation finale claire et prochaine étape)
 
-        1. PAGE DE SYNTHÈSE
-           - Objectif du portefeuille
-           - Budget total
-           - Profil de risque
-           - Nombre d'actifs analysés
-           - Recommandation globale : acheter / attendre / diversifier
+        RÈGLES (contrôlées automatiquement, tout manquement invalide le rapport) :
+        - N'écrivez AUCUN nombre financier : ni pourcentage, ni montant, ni décimale, ni ratio,
+          ni taux de change. Exprimez les idées en mots (élevé, faible, supérieur au benchmark).
+        - Ne calculez rien et n'inventez aucun seuil chiffré.
+        - Si une information manque, écrivez "donnée indisponible".
 
-        2. RÉSUMÉ EXÉCUTIF
-           - Opportunité d'investissement
-           - Qualité globale du portefeuille
-           - Niveau de risque global
-           - Points clés à retenir
-
-        3. ANALYSE DÉTAILLÉE DES ACTIONS
-           Pour chaque action :
-           - Prix actuel
-           - Performance récente
-           - P/E ratio
-           - Beta
-           - Dividende si disponible
-           - Points forts
-           - Points faibles
-           - Avis de l'agent
-
-        4. ANALYSE DU RISQUE
-           - Volatilité annuelle
-           - Sharpe ratio
-           - Drawdown maximum
-           - Corrélation entre les actifs
-           - Commentaire sur la diversification
-
-        5. ALLOCATION RECOMMANDÉE
-           Tableau avec :
-           - Ticker
-           - Poids recommandé
-           - Montant à investir
-           - Prix actuel
-           - Nombre d'actions à acheter
-           - Montant réellement investi
-
-        6. CASH RESTANT
-           - Montant non investi
-           - Explication du cash restant
-
-        7. BACKTEST
-           - Tableau des stratégies (rendement total, CAGR, volatilité, Sharpe, drawdown max)
-             recopié tel quel depuis l'outil portfolio_backtest, avec le benchmark S&P 500
-           - Période et hypothèses indiquées par l'outil
-           - Commentaire qualitatif uniquement : ne recalculez aucun chiffre
-
-        8. STRATÉGIE D'INVESTISSEMENT
-           - Horizon conseillé
-           - Fréquence de rééquilibrage
-           - Conditions de renforcement
-           - Conditions de réduction
-
-        9. RISQUES À SURVEILLER
-           - Risque de marché
-           - Risque sectoriel
-           - Risque spécifique à chaque action
-
-        10. CONCLUSION
-           - Recommandation finale claire
-           - Prochaine étape pour l'investisseur
-        RÈGLES CHIFFRES (contrôlées automatiquement, tout manquement invalide le rapport) :
-        - N'écrivez AUCUN chiffre absent des sorties des outils ou du budget fourni.
-        - Ne calculez rien : ni moyenne, ni différence, ni écart, ni pourcentage dérivé.
-        - Ne convertissez aucune devise et n'inventez aucun taux de change ; indiquez la devise de
-          chaque prix telle que donnée par l'outil.
-        - N'inventez aucun seuil chiffré (P/E cible, % de repli, etc.) : décrivez les conditions
-          qualitativement.
-        - Recopiez les valeurs telles quelles (pas de reformatage en milliards/billions).
-        Budget total : {budget} EUR
-        Profil de risque : {profil_risque}
+        Profil de risque de l'investisseur : {profil_risque}
         """,
         expected_output="""
-        Un rapport de portefeuille très complet, structuré et professionnel en français.
-        Le rapport doit contenir :
-        - Une synthèse exécutive
-        - Une analyse par action
-        - Une analyse des risques
-        - Un tableau d'allocation clair
-        - Un backtest comparant les stratégies au S&P 500
-        - Une stratégie d'investissement
-        - Une conclusion finale
-        Le rapport doit être directement exportable en PDF.
-        Important : n'inventez jamais de données. Si une donnée manque, indiquez "donnée indisponible".
+        Un commentaire markdown en français contenant exactement les cinq sections demandées
+        (Résumé exécutif, Lecture des actions, Stratégie d'investissement, Risques à surveiller,
+        Conclusion), sans aucun chiffre.
         """,
         agent=stratege,
         context=[tache_analyse, tache_risque],
-        output_file="reports/rapport_portefeuille.md",
     )
 
     return [tache_analyse, tache_risque, tache_strategie]

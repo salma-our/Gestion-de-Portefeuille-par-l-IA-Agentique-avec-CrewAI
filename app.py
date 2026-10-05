@@ -24,8 +24,8 @@ import yfinance as yf
 from dotenv import load_dotenv
 
 from src.finance import allocate, annualized_volatility, inverse_volatility_weights
-from src.guardrails import format_validation, validate_report
 from src.llm import api_key_var, llm_configured
+from src.pipeline import finalize_report
 from src.tools import DATA_ERRORS, TOOL_OUTPUTS, _download, _extract_close, run_backtest
 
 # ── Ajout du dossier courant au PYTHONPATH ──────────────────
@@ -579,22 +579,9 @@ def run_analysis():
             TOOL_OUTPUTS.clear()
             resultat = crew.kickoff()
 
-            # ── Lecture du rapport généré par le Stratège ──
-            report_path = "reports/rapport_portefeuille.md"
-            if os.path.exists(report_path):
-                with open(report_path, encoding="utf-8") as f:
-                    report = f.read()
-                add_log(
-                    "log-agent3",
-                    "Stratège",
-                    "Rapport IA lu depuis reports/rapport_portefeuille.md ✓",
-                )
-            else:
-                report = str(resultat)
-                add_log("log-agent3", "Stratège", "Rapport IA extrait du résultat crew ✓")
-
-            validation = validate_report(report, TOOL_OUTPUTS, budget)
-            report += format_validation(validation)
+            # ── Commentaire du Stratège + chiffres calculés par Python ──
+            add_log("log-agent3", "Stratège", "Commentaire IA produit ✓")
+            report, validation = finalize_report(str(resultat), tickers, budget, profile)
             add_log(
                 "log-agent3",
                 "Garde-fous",

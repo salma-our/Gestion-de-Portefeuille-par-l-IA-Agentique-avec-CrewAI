@@ -30,7 +30,8 @@ if not llm_configured():
     sys.exit(1)
 
 from src.agents import create_agents
-from src.guardrails import format_validation, validate_report
+from src.guardrails import format_validation
+from src.pipeline import finalize_report
 from src.tasks import create_tasks
 from src.tools import TOOL_OUTPUTS
 
@@ -124,17 +125,12 @@ def main():
     md_path = "reports/rapport_portefeuille.md"
     pdf_path = "reports/rapport_portefeuille.pdf"
 
-    if os.path.exists(md_path):
-        with open(md_path, encoding="utf-8") as f:
-            markdown_text = f.read()
-        validation = validate_report(markdown_text, TOOL_OUTPUTS, budget)
-        markdown_text += format_validation(validation)
-        with open(md_path, "w", encoding="utf-8") as f:
-            f.write(markdown_text)
-        print(format_validation(validation))
-        markdown_to_pdf(markdown_text, pdf_path)
-    else:
-        markdown_to_pdf(str(resultat), pdf_path)
+    print("\n Assemblage du rapport (chiffres calculés par Python)...")
+    markdown_text, validation = finalize_report(str(resultat), tickers, budget, profil)
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(markdown_text)
+    print(format_validation(validation))
+    markdown_to_pdf(markdown_text, pdf_path)
 
     print(f" Rapport PDF généré dans : {pdf_path}")
 
