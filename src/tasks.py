@@ -171,6 +171,14 @@ def create_tasks(
         10. CONCLUSION
            - Recommandation finale claire
            - Prochaine étape pour l'investisseur
+        RÈGLES CHIFFRES (contrôlées automatiquement, tout manquement invalide le rapport) :
+        - N'écrivez AUCUN chiffre absent des sorties des outils ou du budget fourni.
+        - Ne calculez rien : ni moyenne, ni différence, ni écart, ni pourcentage dérivé.
+        - Ne convertissez aucune devise et n'inventez aucun taux de change ; indiquez la devise de
+          chaque prix telle que donnée par l'outil.
+        - N'inventez aucun seuil chiffré (P/E cible, % de repli, etc.) : décrivez les conditions
+          qualitativement.
+        - Recopiez les valeurs telles quelles (pas de reformatage en milliards/billions).
         Budget total : {budget} EUR
         Profil de risque : {profil_risque}
         """,
