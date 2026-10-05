@@ -24,6 +24,7 @@ def _fake_prices(seed: int = 0) -> pd.DataFrame:
 @pytest.fixture
 def offline(monkeypatch):
     monkeypatch.setattr(tools, "_download", lambda *a, **k: _fake_prices())
+    monkeypatch.setattr(tools, "_currency", lambda t: "EUR")
 
 
 def test_allocation_tool_is_consistent(offline):
@@ -119,3 +120,27 @@ def test_tool_outputs_are_recorded_for_guardrails(offline):
     tools.TOOL_OUTPUTS.clear()
     out = tools.calculate_optimal_allocation.run(tickers="AAA,BBB", budget=5000.0)
     assert tools.TOOL_OUTPUTS == [out]
+
+
+def test_allocation_converts_prices_to_base_currency(monkeypatch):
+    monkeypatch.setattr(tools, "_download", lambda *a, **k: _fake_prices())
+    monkeypatch.setattr(tools, "_currency", lambda t: "USD")
+    monkeypatch.setattr(tools, "_fx_to_base", lambda c, b="EUR": 0.5)
+    out = json.loads(tools.calculate_optimal_allocation.run(tickers="AAA,BBB", budget=5000.0))
+    for a in out["allocations"].values():
+        assert a["currency"] == "USD" and a["fx_rate_to_eur"] == 0.5
+        assert float(a["current_price"]) == pytest.approx(float(a["price_local"]) * 0.5, abs=0.01)
+    assert out["total_invested"] <= 5000.0
+
+
+def test_allocation_falls_back_when_fx_unavailable(monkeypatch):
+    monkeypatch.setattr(tools, "_download", lambda *a, **k: _fake_prices())
+    monkeypatch.setattr(tools, "_currency", lambda t: "USD")
+
+    def no_fx(currency, base="EUR"):
+        raise ValueError("FX rate unavailable")
+
+    monkeypatch.setattr(tools, "_fx_to_base", no_fx)
+    assert (
+        tools.calculate_optimal_allocation.run(tickers="AAA", budget=1000.0) == tools.FALLBACK_MSG
+    )

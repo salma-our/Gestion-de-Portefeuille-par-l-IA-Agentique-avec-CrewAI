@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 # Raw outputs of every tool call in the current run; used to validate the final report.
 TOOL_OUTPUTS: list[str] = []
 
+BASE_CURRENCY = "EUR"
 BENCHMARK = "^GSPC"
 BACKTEST_LOOKBACK = 252
 MIN_BACKTEST_ROWS = BACKTEST_LOOKBACK + 42
@@ -74,6 +75,28 @@ def _download(tickers, period: str = "1y", retries: int = 3) -> pd.DataFrame:
             logger.warning("yfinance returned no data (attempt %d/%d)", attempt + 1, retries)
         time.sleep(wait * (attempt + 1))
     return pd.DataFrame()
+
+
+def _currency(ticker: str) -> str:
+    """Trading currency of a ticker as reported by Yahoo (for example USD, EUR, GBp)."""
+    try:
+        return str(yf.Ticker(ticker).fast_info["currency"])
+    except Exception as exc:  # noqa: BLE001 - yfinance raises many unrelated types
+        raise ValueError(f"Currency unavailable for {ticker}: {exc}") from exc
+
+
+def _fx_to_base(currency: str, base: str = BASE_CURRENCY) -> float:
+    """Units of `base` per unit of `currency`, from the latest Yahoo FX close."""
+    scale = 1.0
+    if currency == "GBp":  # London quotes in pence
+        currency, scale = "GBP", 0.01
+    if currency == base:
+        return scale
+    pair = f"{currency}{base}=X"
+    data = _extract_close(_download(pair, period="5d"), pair)
+    if pair not in data.columns or data[pair].dropna().empty:
+        raise ValueError(f"FX rate unavailable for {pair}")
+    return float(data[pair].dropna().iloc[-1]) * scale
 
 
 def _extract_close(raw, tickers):
@@ -231,7 +254,7 @@ def calculate_optimal_allocation(tickers: str, budget: float = 10000.0) -> str:
 
     Args:
         tickers: Stock symbols separated by commas, e.g., AAPL,MSFT
-        budget: Total investment budget in EUR/USD
+        budget: Total investment budget in EUR; prices are converted from their trading currency
 
     Returns:
         JSON string with allocation recommendations
@@ -262,11 +285,18 @@ def calculate_optimal_allocation(tickers: str, budget: float = 10000.0) -> str:
         if not weights:
             return FALLBACK_MSG
 
-        positions, cash = allocate(weights, current_prices, budget)
+        currencies = {t: _currency(t) for t in weights}
+        fx = {c: _fx_to_base(c) for c in set(currencies.values())}
+        base_prices = {t: round(current_prices[t] * fx[currencies[t]], 2) for t in weights}
+
+        positions, cash = allocate(weights, base_prices, budget)
         allocations = {
             t: {
                 "recommended_weight": f"{round(p.weight * 100, 1)}%",
                 "allocated_amount": str(round(p.target_amount, 2)),
+                "currency": currencies[t],
+                "price_local": str(current_prices[t]),
+                "fx_rate_to_eur": round(fx[currencies[t]], 4),
                 "current_price": str(p.price),
                 "shares_to_buy": p.shares,
                 "real_amount_invested": str(round(p.invested, 2)),
@@ -276,6 +306,7 @@ def calculate_optimal_allocation(tickers: str, budget: float = 10000.0) -> str:
         total_invested = budget - cash
 
         result = {
+            "base_currency": BASE_CURRENCY,
             "total_budget": budget,
             "total_invested": round(total_invested, 2),
             "cash_remaining": round(budget - total_invested, 2),
@@ -348,7 +379,8 @@ def backtest_portfolio(tickers: str, years: int = 3) -> str:
         "period": f"{curves.index[0].date()} to {curves.index[-1].date()}",
         "assumptions": (
             "long-only, monthly rebalance, 252-day estimation window, 10 bps transaction "
-            f"cost, benchmark S&P 500 ({BENCHMARK}, USD)"
+            f"cost, benchmark S&P 500 ({BENCHMARK}), returns in local currencies "
+            "without FX adjustment"
         ),
         "strategies": strategies_out,
     }
