@@ -3,7 +3,12 @@
 from crewai import Agent
 
 from src.llm import get_llm
-from src.tools import analyze_portfolio_risk, analyze_stock, calculate_optimal_allocation
+from src.tools import (
+    analyze_portfolio_risk,
+    analyze_stock,
+    backtest_portfolio,
+    calculate_optimal_allocation,
+)
 
 
 def create_agents():
@@ -72,7 +77,7 @@ def create_agents():
             "Les montants sont basés sur les prix réels de yfinance. "
             "N'INVENTEZ JAMAIS d'allocation 'de bon sens' sans calcul justifiable."
         ),
-        tools=[calculate_optimal_allocation],
+        tools=[calculate_optimal_allocation, backtest_portfolio],
         llm=llm,
         verbose=True,
         allow_delegation=False,

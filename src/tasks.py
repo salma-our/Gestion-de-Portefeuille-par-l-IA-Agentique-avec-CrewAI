@@ -102,6 +102,9 @@ def create_tasks(
         - tickers: "{tickers_str}"
         - budget: {budget}
 
+        Utilisez aussi l'outil portfolio_backtest avec :
+        - tickers: "{tickers_str}"
+
            Puis rédigez un rapport final complet et professionnel qui contiendra :
 
         1. PAGE DE SYNTHÈSE
@@ -148,18 +151,24 @@ def create_tasks(
            - Montant non investi
            - Explication du cash restant
 
-        7. STRATÉGIE D'INVESTISSEMENT
+        7. BACKTEST
+           - Tableau des stratégies (rendement total, CAGR, volatilité, Sharpe, drawdown max)
+             recopié tel quel depuis l'outil portfolio_backtest, avec le benchmark S&P 500
+           - Période et hypothèses indiquées par l'outil
+           - Commentaire qualitatif uniquement : ne recalculez aucun chiffre
+
+        8. STRATÉGIE D'INVESTISSEMENT
            - Horizon conseillé
            - Fréquence de rééquilibrage
            - Conditions de renforcement
            - Conditions de réduction
 
-        8. RISQUES À SURVEILLER
+        9. RISQUES À SURVEILLER
            - Risque de marché
            - Risque sectoriel
            - Risque spécifique à chaque action
 
-        9. CONCLUSION
+        10. CONCLUSION
            - Recommandation finale claire
            - Prochaine étape pour l'investisseur
         Budget total : {budget} EUR
@@ -172,6 +181,7 @@ def create_tasks(
         - Une analyse par action
         - Une analyse des risques
         - Un tableau d'allocation clair
+        - Un backtest comparant les stratégies au S&P 500
         - Une stratégie d'investissement
         - Une conclusion finale
         Le rapport doit être directement exportable en PDF.

@@ -12,6 +12,8 @@ import pandas as pd
 import yfinance as yf
 from crewai.tools import tool
 
+from src import strategies
+from src.backtest import compare_strategies
 from src.finance import (
     allocate,
     annualized_return,
@@ -22,6 +24,10 @@ from src.finance import (
 )
 
 logger = logging.getLogger(__name__)
+
+BENCHMARK = "^GSPC"
+BACKTEST_LOOKBACK = 252
+MIN_BACKTEST_ROWS = BACKTEST_LOOKBACK + 42
 
 # Errors that mean 'the data is unusable', as opposed to programming bugs.
 DATA_ERRORS = (ValueError, KeyError, IndexError, ZeroDivisionError)
@@ -262,3 +268,70 @@ def calculate_optimal_allocation(tickers: str, budget: float = 10000.0) -> str:
     except DATA_ERRORS:
         logger.exception("Tool failed on unusable data")
         return FALLBACK_MSG
+
+
+def run_backtest(
+    tickers: list[str], years: int = 3, benchmark: str = BENCHMARK
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Download prices and compare allocation strategies; returns (summary, growth curves)."""
+    prices = _extract_close(_download(tickers, period=f"{years}y"), tickers)
+    prices = prices[[t for t in tickers if t in prices.columns]].dropna()
+    if len(prices) < MIN_BACKTEST_ROWS:
+        raise ValueError(f"Not enough price history for a backtest ({len(prices)} rows)")
+
+    n = prices.shape[1]
+    candidates: dict[str, strategies.Strategy] = {
+        "Equal weight": strategies.equal_weight,
+        "Inverse volatility": strategies.inverse_volatility,
+    }
+    if n > 1:
+        cap = max(0.5, 1.2 / n)
+        candidates["Min variance"] = lambda w: strategies.min_variance(w, cap)
+        candidates["Max Sharpe"] = lambda w: strategies.max_sharpe(w, cap)
+        candidates["Risk parity"] = lambda w: strategies.risk_parity(w, cap)
+
+    bench_prices = _extract_close(_download(benchmark, period=f"{years}y"), benchmark)
+    bench = bench_prices[benchmark].dropna() if benchmark in bench_prices.columns else None
+    return compare_strategies(prices, candidates, bench, lookback=BACKTEST_LOOKBACK)
+
+
+# Tool 4: Backtest
+@tool("portfolio_backtest")
+def backtest_portfolio(tickers: str, years: int = 3) -> str:
+    """
+    Backtest allocation strategies (equal weight, inverse volatility, min variance, max Sharpe,
+    risk parity) on historical prices with monthly rebalancing and transaction costs, and compare
+    them with the S&P 500. All figures are computed by Python, never estimated.
+
+    Args:
+        tickers: Stock symbols separated by commas, e.g., AAPL,MSFT
+        years: Years of history to download (default 3; the first year is the estimation window)
+
+    Returns:
+        JSON string with performance metrics per strategy
+    """
+    ticker_list = [t.strip().upper() for t in tickers.split(",")]
+    try:
+        summary, curves = run_backtest(ticker_list, years)
+    except DATA_ERRORS:
+        logger.exception("Backtest failed on unusable data")
+        return FALLBACK_MSG
+
+    pct = ("total_return", "cagr", "volatility", "max_drawdown")
+    strategies_out = {
+        name: {
+            k: (f"{round(v * 100, 2)}%" if k in pct else round(float(v), 2)) for k, v in row.items()
+        }
+        for name, row in summary.iterrows()
+    }
+    result = {
+        "period": f"{curves.index[0].date()} to {curves.index[-1].date()}",
+        "assumptions": (
+            "long-only, monthly rebalance, 252-day estimation window, 10 bps transaction "
+            f"cost, benchmark S&P 500 ({BENCHMARK}, USD)"
+        ),
+        "strategies": strategies_out,
+    }
+    if "Benchmark" not in summary.index:
+        result["benchmark"] = "donnée indisponible"
+    return json.dumps(result, ensure_ascii=False, indent=2)

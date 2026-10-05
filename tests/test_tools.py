@@ -58,3 +58,58 @@ def test_tools_return_fallback_when_no_data(monkeypatch):
     assert tools.FALLBACK_MSG == tools.calculate_optimal_allocation.run(
         tickers="AAA", budget=1000.0
     )
+
+
+def _long_prices(cols, seed=0, n=600) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    idx = pd.bdate_range("2023-01-02", periods=n)
+    close = pd.DataFrame(
+        {
+            c: 100 * np.cumprod(1 + rng.normal(0.0004, 0.008 * (i + 1), n))
+            for i, c in enumerate(cols)
+        },
+        index=idx,
+    )
+    return pd.concat({"Close": close}, axis=1)
+
+
+@pytest.fixture
+def offline_backtest(monkeypatch):
+    def fake(tickers, *a, **k):
+        if isinstance(tickers, str):
+            return _long_prices([tickers], seed=7)
+        return _long_prices(tickers)
+
+    monkeypatch.setattr(tools, "_download", fake)
+
+
+def test_backtest_tool_returns_all_strategies_and_benchmark(offline_backtest):
+    out = json.loads(tools.backtest_portfolio.run(tickers="AAA,BBB,CCC", years=3))
+    assert set(out["strategies"]) == {
+        "Equal weight",
+        "Inverse volatility",
+        "Min variance",
+        "Max Sharpe",
+        "Risk parity",
+        "Benchmark",
+    }
+    row = out["strategies"]["Equal weight"]
+    assert row["max_drawdown"].endswith("%") and isinstance(row["sharpe"], float)
+    assert "benchmark" not in out
+
+
+def test_backtest_tool_numbers_come_from_python(offline_backtest):
+    summary, _ = tools.run_backtest(["AAA", "BBB", "CCC"])
+    out = json.loads(tools.backtest_portfolio.run(tickers="AAA,BBB,CCC", years=3))
+    expected = f"{round(summary.loc['Min variance', 'cagr'] * 100, 2)}%"
+    assert out["strategies"]["Min variance"]["cagr"] == expected
+
+
+def test_backtest_tool_single_ticker_skips_optimizers(offline_backtest):
+    out = json.loads(tools.backtest_portfolio.run(tickers="AAA", years=3))
+    assert set(out["strategies"]) == {"Equal weight", "Inverse volatility", "Benchmark"}
+
+
+def test_backtest_tool_falls_back_on_short_history(monkeypatch):
+    monkeypatch.setattr(tools, "_download", lambda *a, **k: _fake_prices())
+    assert tools.backtest_portfolio.run(tickers="AAA,BBB", years=3) == tools.FALLBACK_MSG
