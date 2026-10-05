@@ -24,8 +24,9 @@ import yfinance as yf
 from dotenv import load_dotenv
 
 from src.finance import allocate, annualized_volatility, inverse_volatility_weights
+from src.guardrails import format_validation, validate_report
 from src.llm import api_key_var, llm_configured
-from src.tools import DATA_ERRORS, _download, _extract_close, run_backtest
+from src.tools import DATA_ERRORS, TOOL_OUTPUTS, _download, _extract_close, run_backtest
 
 # ── Ajout du dossier courant au PYTHONPATH ──────────────────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -575,6 +576,7 @@ def run_analysis():
             )
 
             # ── LANCEMENT RÉEL DES AGENTS ──
+            TOOL_OUTPUTS.clear()
             resultat = crew.kickoff()
 
             # ── Lecture du rapport généré par le Stratège ──
@@ -590,6 +592,16 @@ def run_analysis():
             else:
                 report = str(resultat)
                 add_log("log-agent3", "Stratège", "Rapport IA extrait du résultat crew ✓")
+
+            validation = validate_report(report, TOOL_OUTPUTS, budget)
+            report += format_validation(validation)
+            add_log(
+                "log-agent3",
+                "Garde-fous",
+                "Rapport validé ✓"
+                if validation.passed
+                else "Rapport NON validé ⚠ (voir pied de page)",
+            )
 
             # ── Allocation pour l'affichage visuel ──
             # (Les agents ont déjà calculé via AllocationTool ; on recalcule localement
