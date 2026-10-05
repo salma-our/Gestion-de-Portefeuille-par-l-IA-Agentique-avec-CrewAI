@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 
 from src.finance import allocate, annualized_volatility, inverse_volatility_weights
 from src.llm import api_key_var, llm_configured
-from src.tools import _download, _extract_close
+from src.tools import DATA_ERRORS, _download, _extract_close, run_backtest
 
 # ── Ajout du dossier courant au PYTHONPATH ──────────────────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -138,6 +138,7 @@ def init_state():
         "prices": {},
         "start_time": None,
         "dashboard_data": None,
+        "backtest": None,
         "pdf_bytes": None,
         "crew_mode": True,  # True = appelle les vrais agents CrewAI
     }
@@ -209,6 +210,16 @@ def fetch_market_data(tickers, period="1y"):
     if isinstance(data, pd.Series):
         data = data.to_frame(name=tickers[0])
     return data.dropna(how="all")
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_backtest(tickers: tuple[str, ...]):
+    """Backtest summary and growth curves, or None if the data is unusable."""
+    try:
+        return run_backtest(list(tickers))
+    except DATA_ERRORS:
+        logger.exception("Backtest failed")
+        return None
 
 
 def fetch_prices(tickers):
@@ -476,6 +487,7 @@ def run_analysis():
     st.session_state.alloc_data = None
     st.session_state.report_text = None
     st.session_state.dashboard_data = None
+    st.session_state.backtest = None
     st.session_state.pdf_bytes = None
     st.session_state.start_time = time.time()
     st.session_state.agent_states = ["idle", "idle", "idle"]
@@ -490,6 +502,8 @@ def run_analysis():
     dashboard = compute_dashboard_data(tickers)
     st.session_state.prices = prices
     st.session_state.dashboard_data = dashboard
+    add_log("log-system", "Système", "Backtest des stratégies (3 ans, benchmark S&P 500)…")
+    st.session_state.backtest = fetch_backtest(tuple(tickers))
     for t, p in prices.items():
         add_log("log-agent1", "Analyste", f"{t} → {p} EUR" if p else f"{t} → donnée indisponible")
 
@@ -902,7 +916,7 @@ if dashboard and dashboard.get("summary") is not None:
     cumulative = dashboard.get("cumulative")
 
     st.markdown("### Indicateurs clés par actif")
-    st.dataframe(summary, use_container_width=True)
+    st.dataframe(summary, width="stretch")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -911,7 +925,7 @@ if dashboard and dashboard.get("summary") is not None:
     with c2:
         st.markdown("### Matrice de corrélation")
         if corr is not None:
-            st.dataframe(corr.round(2), use_container_width=True)
+            st.dataframe(corr.round(2), width="stretch")
         else:
             st.info("Corrélation indisponible.")
 
@@ -921,3 +935,39 @@ else:
     st.info(
         "Lancez l'analyse pour afficher les indicateurs enrichis : performance, volatilité, Sharpe, drawdown et corrélation."
     )
+
+# Backtest
+st.markdown("---")
+st.markdown("## Backtest des stratégies")
+backtest = st.session_state.backtest
+if backtest is not None:
+    bt_summary, bt_curves = backtest
+    st.caption(
+        "Long uniquement, rééquilibrage mensuel, fenêtre d'estimation 252 jours, "
+        "coûts 10 pb, benchmark S&P 500 (USD). Chiffres calculés par Python."
+    )
+    st.dataframe(
+        bt_summary.rename(
+            columns={
+                "total_return": "Rendement total",
+                "cagr": "CAGR",
+                "volatility": "Volatilité",
+                "sharpe": "Sharpe",
+                "max_drawdown": "Drawdown max",
+            }
+        ).style.format(
+            {
+                "Rendement total": "{:.1%}",
+                "CAGR": "{:.1%}",
+                "Volatilité": "{:.1%}",
+                "Sharpe": "{:.2f}",
+                "Drawdown max": "{:.1%}",
+            }
+        ),
+        width="stretch",
+    )
+    st.line_chart(bt_curves)
+elif st.session_state.done:
+    st.warning("Backtest indisponible (historique insuffisant ou données inaccessibles).")
+else:
+    st.info("Lancez l'analyse pour comparer les stratégies au S&P 500.")
