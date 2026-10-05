@@ -118,16 +118,26 @@ def check_allocation(tool_outputs: list[str], budget: float) -> Check:
     return Check("allocation_consistent", True, "no allocation output to check")
 
 
-def validate_report(report: str, tool_outputs: list[str], budget: float) -> GuardrailResult:
-    """Run every guardrail on a generated report."""
-    return GuardrailResult(
-        [
-            check_sections(report),
-            check_numbers_traceable(report, tool_outputs, budget),
-            check_missing_data_acknowledged(report, tool_outputs),
-            check_allocation(tool_outputs, budget),
-        ]
-    )
+def check_narrative_has_no_numbers(narrative: str) -> Check:
+    """The LLM's commentary must contain no percentage, amount or decimal figure."""
+    found = [f"{v:.{d}f}" for v, d in extract_numbers(narrative, financial_only=True)]
+    detail = f"figures in narrative: {', '.join(dict.fromkeys(found))}" if found else ""
+    return Check("narrative_without_figures", not found, detail)
+
+
+def validate_report(
+    report: str, tool_outputs: list[str], budget: float, narrative: str | None = None
+) -> GuardrailResult:
+    """Run every guardrail on a generated report (and on the LLM narrative if given)."""
+    checks = [
+        check_sections(report),
+        check_numbers_traceable(report, tool_outputs, budget),
+        check_missing_data_acknowledged(report, tool_outputs),
+        check_allocation(tool_outputs, budget),
+    ]
+    if narrative is not None:
+        checks.append(check_narrative_has_no_numbers(narrative))
+    return GuardrailResult(checks)
 
 
 def format_validation(result: GuardrailResult) -> str:
