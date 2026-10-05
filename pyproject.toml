@@ -1,0 +1,14 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = [".venv", "Gestion-de-Portefeuille-par-l-IA-Agentique-avec-CrewAI"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "BLE"]
+
+[tool.ruff.lint.per-file-ignores]
+"app.py" = ["E501", "E402"]
+"main.py" = ["E402"]
+"demo.py" = ["E402"]
+"src/tasks.py" = ["E501"]
+"src/agents.py" = ["E501"]

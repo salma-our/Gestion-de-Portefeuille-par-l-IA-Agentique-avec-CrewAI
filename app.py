@@ -4,12 +4,13 @@ Gestionnaire de Portefeuille Agentic AI
 
 CORRECTION PRINCIPALE :
 - run_analysis() appelle maintenant réellement les agents CrewAI via crew.kickoff()
-- Les agents Mistral analysent, évaluent les risques et rédigent le rapport
+- Les agents LLM analysent, évaluent les risques et rédigent le rapport
 - Fallback automatique sur calcul local si la clé API manque ou en cas d'erreur
 
 Lancement : streamlit run app.py
 """
 
+import logging
 import os
 import sys
 import time
@@ -22,14 +23,8 @@ import streamlit as st
 import yfinance as yf
 from dotenv import load_dotenv
 
+from src.llm import api_key_var, llm_configured
 
-# --- SÉCURITÉ INSTALLATION REPORTLAB ---
-try:
-    import reportlab
-except ImportError:
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "reportlab"])
-# --------------------------------------
 # ── Ajout du dossier courant au PYTHONPATH ──────────────────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -39,11 +34,13 @@ try:
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import cm
     from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
     REPORTLAB_AVAILABLE = True
-except Exception:
+except ImportError:
     REPORTLAB_AVAILABLE = False
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 # ── Configuration de la page ──────────────────────────────
 st.set_page_config(
@@ -54,7 +51,8 @@ st.set_page_config(
 )
 
 # ── CSS personnalisé ──────────────────────────────────────
-st.markdown("""
+st.markdown(
+    """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
 
@@ -118,7 +116,9 @@ div[data-testid="stSidebar"] .stSelectbox label, div[data-testid="stSidebar"] .s
 .stAlert { border-radius: 8px !important; }
 hr { border-color: #1a1a1a !important; }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 
 # ── Initialisation session state ──────────────────────────
@@ -137,11 +137,12 @@ def init_state():
         "start_time": None,
         "dashboard_data": None,
         "pdf_bytes": None,
-        "crew_mode": True,    # True = appelle les vrais agents CrewAI
+        "crew_mode": True,  # True = appelle les vrais agents CrewAI
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+
 
 init_state()
 
@@ -165,7 +166,7 @@ AGENT_ROLES_IDX = {
     "Stratège de Portefeuille": 2,
 }
 LOG_CLASSES = ["log-agent1", "log-agent2", "log-agent3"]
-LOG_NAMES   = ["Analyste", "Risques", "Stratège"]
+LOG_NAMES = ["Analyste", "Risques", "Stratège"]
 
 
 def now_str():
@@ -176,12 +177,14 @@ def now_str():
 
 
 def add_log(agent_class, agent_name, msg):
-    st.session_state.logs.append({
-        "time": now_str(),
-        "cls": agent_class,
-        "name": agent_name,
-        "msg": msg,
-    })
+    st.session_state.logs.append(
+        {
+            "time": now_str(),
+            "cls": agent_class,
+            "name": agent_name,
+            "msg": msg,
+        }
+    )
 
 
 def render_logs():
@@ -192,7 +195,7 @@ def render_logs():
             f'<span class="log-time">{e["time"]}</span>'
             f'<span class="{e["cls"]}">[{e["name"]}]</span> '
             f'<span style="color:#888">{e["msg"]}</span>'
-            f'</div>'
+            f"</div>"
         )
     return f'<div class="log-terminal">{lines}</div>'
 
@@ -200,9 +203,7 @@ def render_logs():
 # ── Données de marché (yfinance) ──────────────────────────
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_market_data(tickers, period="1y"):
-    data = yf.download(
-        tickers, period=period, progress=False, threads=False, auto_adjust=True
-    )
+    data = yf.download(tickers, period=period, progress=False, threads=False, auto_adjust=True)
     if isinstance(data, pd.Series):
         data = data.to_frame(name=tickers[0])
     return data.dropna(how="all")
@@ -214,7 +215,8 @@ def fetch_prices(tickers):
         try:
             hist = yf.Ticker(t).history(period="5d", auto_adjust=True)
             prices[t] = round(float(hist["Close"].dropna().iloc[-1]), 2) if not hist.empty else None
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - yfinance raises many unrelated types
+            logger.warning("Price fetch failed for %s: %s", t, exc)
             prices[t] = None
     return prices
 
@@ -231,40 +233,43 @@ def compute_dashboard_data(tickers):
         cumulative = (1 + returns.fillna(0)).cumprod()
         cumulative = cumulative / cumulative.iloc[0]
         performance = ((data.iloc[-1] / data.iloc[0]) - 1) * 100
-        volatility  = returns.std() * np.sqrt(252) * 100
-        sharpe      = (returns.mean() * 252) / (returns.std() * np.sqrt(252))
+        volatility = returns.std() * np.sqrt(252) * 100
+        sharpe = (returns.mean() * 252) / (returns.std() * np.sqrt(252))
         running_max = data.cummax()
-        drawdown    = (data / running_max - 1) * 100
+        drawdown = (data / running_max - 1) * 100
         max_drawdown = drawdown.min()
         corr = returns.corr()
-        summary = pd.DataFrame({
-            "Prix actuel":           data.iloc[-1].round(2),
-            "Performance 1 an (%)":  performance.round(2),
-            "Volatilité annuelle (%)": volatility.round(2),
-            "Sharpe ratio":          sharpe.round(2),
-            "Drawdown max (%)":      max_drawdown.round(2),
-        })
+        summary = pd.DataFrame(
+            {
+                "Prix actuel": data.iloc[-1].round(2),
+                "Performance 1 an (%)": performance.round(2),
+                "Volatilité annuelle (%)": volatility.round(2),
+                "Sharpe ratio": sharpe.round(2),
+                "Drawdown max (%)": max_drawdown.round(2),
+            }
+        )
         summary.index.name = "Ticker"
         return {
-            "prices_history":    data,
-            "returns":           returns,
-            "cumulative":        cumulative,
-            "summary":           summary,
-            "corr":              corr,
+            "prices_history": data,
+            "returns": returns,
+            "cumulative": cumulative,
+            "summary": summary,
+            "corr": corr,
             "portfolio_volatility": float(volatility.mean()) if len(volatility) else None,
-            "best_asset":        performance.idxmax() if len(performance) else None,
-            "worst_asset":       performance.idxmin() if len(performance) else None,
+            "best_asset": performance.idxmax() if len(performance) else None,
+            "worst_asset": performance.idxmin() if len(performance) else None,
         }
-    except Exception:
+    except (ValueError, KeyError, IndexError, ZeroDivisionError):
+        logger.exception("Dashboard computation failed")
         return None
 
 
 def compute_allocation(tickers, budget, prices, profile="moderate"):
     """Allocation locale (utilisée pour l'affichage des barres, indépendante des agents)."""
     try:
-        data = yf.download(
-            tickers, period="1y", auto_adjust=True, progress=False, threads=False
-        )["Close"]
+        data = yf.download(tickers, period="1y", auto_adjust=True, progress=False, threads=False)[
+            "Close"
+        ]
         if data.empty:
             raise ValueError("Données yfinance vides")
         if len(tickers) == 1:
@@ -275,15 +280,15 @@ def compute_allocation(tickers, budget, prices, profile="moderate"):
             if t not in returns.columns:
                 continue
             serie_returns = returns[t].dropna()
-            serie_prices  = data[t].dropna()
+            serie_prices = data[t].dropna()
             if serie_returns.empty or serie_prices.empty:
                 continue
             annual_return = (serie_prices.iloc[-1] / serie_prices.iloc[0]) - 1
-            volatility    = serie_returns.std() * np.sqrt(252)
+            volatility = serie_returns.std() * np.sqrt(252)
             if volatility <= 0:
                 continue
             if profile == "conservative":
-                score = 1 / (volatility ** 2)
+                score = 1 / (volatility**2)
             elif profile == "aggressive":
                 score = (max(annual_return, 0.01) ** 2) / volatility
             else:
@@ -297,7 +302,8 @@ def compute_allocation(tickers, budget, prices, profile="moderate"):
         weights = {t: min(w, max_weight) for t, w in weights.items()}
         total_w = sum(weights.values())
         weights = {t: w / total_w for t, w in weights.items()}
-    except Exception as e:
+    except (ValueError, KeyError, IndexError, ZeroDivisionError):
+        logger.exception("Allocation scoring failed, falling back to equal weights")
         n = len(tickers)
         weights = {t: 1 / n for t in tickers}
     alloc = []
@@ -309,14 +315,16 @@ def compute_allocation(tickers, budget, prices, profile="moderate"):
             montant_reel = nb_actions * prix
         else:
             nb_actions, montant_reel = 0, 0
-        alloc.append({
-            "ticker": t,
-            "poids": round(w * 100, 1),
-            "montant": round(montant_cible, 2),
-            "prix": round(prix, 2),
-            "nb_actions": nb_actions,
-            "montant_reel": round(montant_reel, 2),
-        })
+        alloc.append(
+            {
+                "ticker": t,
+                "poids": round(w * 100, 1),
+                "montant": round(montant_cible, 2),
+                "prix": round(prix, 2),
+                "nb_actions": nb_actions,
+                "montant_reel": round(montant_reel, 2),
+            }
+        )
     return alloc
 
 
@@ -327,8 +335,8 @@ def build_rich_report(tickers, budget, profile, alloc, dashboard):
     cash = budget - total_investi
     profile_label = PROFILE_META[profile][1]
     summary = dashboard.get("summary") if dashboard else None
-    corr    = dashboard.get("corr") if dashboard else None
-    best_asset  = dashboard.get("best_asset") if dashboard else "donnée indisponible"
+    corr = dashboard.get("corr") if dashboard else None
+    best_asset = dashboard.get("best_asset") if dashboard else "donnée indisponible"
     worst_asset = dashboard.get("worst_asset") if dashboard else "donnée indisponible"
     report = f"""# Rapport de Portefeuille (mode local – sans IA)
 
@@ -358,11 +366,11 @@ Portefeuille de **{len(tickers)} actifs** — Budget : **{budget:,.2f} EUR** —
         for ticker in summary.index:
             row = summary.loc[ticker]
             report += f"""### {ticker}
-- Prix actuel : **{row.get('Prix actuel', 'N/A')}**
-- Performance 1 an : **{row.get('Performance 1 an (%)', 'N/A')}%**
-- Volatilité annuelle : **{row.get('Volatilité annuelle (%)', 'N/A')}%**
-- Sharpe ratio : **{row.get('Sharpe ratio', 'N/A')}**
-- Drawdown maximum : **{row.get('Drawdown max (%)', 'N/A')}%**
+- Prix actuel : **{row.get("Prix actuel", "N/A")}**
+- Performance 1 an : **{row.get("Performance 1 an (%)", "N/A")}%**
+- Volatilité annuelle : **{row.get("Volatilité annuelle (%)", "N/A")}%**
+- Sharpe ratio : **{row.get("Sharpe ratio", "N/A")}**
+- Drawdown maximum : **{row.get("Drawdown max (%)", "N/A")}%**
 
 """
     report += "## 4. Analyse du risque\n\n"
@@ -378,7 +386,16 @@ Portefeuille de **{len(tickers)} actifs** — Budget : **{budget:,.2f} EUR** —
 
 # ── Génération PDF ────────────────────────────────────────
 def clean_markdown(text):
-    for old, new in {"**": "", "###": "", "##": "", "#": "", "*": "", "€": "EUR", "→": "->", "·": "-"}.items():
+    for old, new in {
+        "**": "",
+        "###": "",
+        "##": "",
+        "#": "",
+        "*": "",
+        "€": "EUR",
+        "→": "->",
+        "·": "-",
+    }.items():
         text = text.replace(old, new)
     return text
 
@@ -387,45 +404,77 @@ def generate_pdf_bytes(report_text, alloc=None, summary=None):
     if not REPORTLAB_AVAILABLE:
         return None
     buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=1.6*cm, leftMargin=1.6*cm, topMargin=1.5*cm, bottomMargin=1.5*cm)
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=1.6 * cm,
+        leftMargin=1.6 * cm,
+        topMargin=1.5 * cm,
+        bottomMargin=1.5 * cm,
+    )
     styles = getSampleStyleSheet()
-    title_style  = ParagraphStyle("TC", parent=styles["Title"],    fontSize=18, leading=22, spaceAfter=14)
-    h1_style     = ParagraphStyle("H1", parent=styles["Heading1"], fontSize=13, leading=16, spaceBefore=10, spaceAfter=6)
-    h2_style     = ParagraphStyle("H2", parent=styles["Heading2"], fontSize=11, leading=14, spaceBefore=8,  spaceAfter=4)
-    normal_style = ParagraphStyle("NR", parent=styles["Normal"],   fontSize=9,  leading=12, spaceAfter=4)
+    title_style = ParagraphStyle(
+        "TC", parent=styles["Title"], fontSize=18, leading=22, spaceAfter=14
+    )
+    h1_style = ParagraphStyle(
+        "H1", parent=styles["Heading1"], fontSize=13, leading=16, spaceBefore=10, spaceAfter=6
+    )
+    h2_style = ParagraphStyle(
+        "H2", parent=styles["Heading2"], fontSize=11, leading=14, spaceBefore=8, spaceAfter=4
+    )
+    normal_style = ParagraphStyle(
+        "NR", parent=styles["Normal"], fontSize=9, leading=12, spaceAfter=4
+    )
     story = []
     table_buffer = []
+
     def flush_table():
         nonlocal table_buffer
         if not table_buffer:
             return
-        rows = [[clean_markdown(c.strip()) for c in line.split("|") if c.strip()]
-                for line in table_buffer if "---" not in line]
+        rows = [
+            [clean_markdown(c.strip()) for c in line.split("|") if c.strip()]
+            for line in table_buffer
+            if "---" not in line
+        ]
         rows = [r for r in rows if r]
         if rows:
             t = Table(rows, repeatRows=1)
-            t.setStyle(TableStyle([
-                ("BACKGROUND", (0,0), (-1,0), colors.lightgrey),
-                ("GRID", (0,0), (-1,-1), 0.4, colors.grey),
-                ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-                ("FONTSIZE", (0,0), (-1,-1), 7),
-                ("VALIGN", (0,0), (-1,-1), "TOP"),
-            ]))
+            t.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                        ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("FONTSIZE", (0, 0), (-1, -1), 7),
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ]
+                )
+            )
             story.append(t)
             story.append(Spacer(1, 6))
         table_buffer.clear()
+
     for line in report_text.splitlines():
         line = line.strip()
         if not line:
-            flush_table(); story.append(Spacer(1, 4)); continue
+            flush_table()
+            story.append(Spacer(1, 4))
+            continue
         if "|" in line:
-            table_buffer.append(line); continue
+            table_buffer.append(line)
+            continue
         flush_table()
-        if line.startswith("# "):       story.append(Paragraph(clean_markdown(line), title_style))
-        elif line.startswith("## "):    story.append(Paragraph(clean_markdown(line), h1_style))
-        elif line.startswith("### "):   story.append(Paragraph(clean_markdown(line), h2_style))
-        elif line.startswith("- "):     story.append(Paragraph("• " + clean_markdown(line[2:]), normal_style))
-        else:                           story.append(Paragraph(clean_markdown(line), normal_style))
+        if line.startswith("# "):
+            story.append(Paragraph(clean_markdown(line), title_style))
+        elif line.startswith("## "):
+            story.append(Paragraph(clean_markdown(line), h1_style))
+        elif line.startswith("### "):
+            story.append(Paragraph(clean_markdown(line), h2_style))
+        elif line.startswith("- "):
+            story.append(Paragraph("• " + clean_markdown(line[2:]), normal_style))
+        else:
+            story.append(Paragraph(clean_markdown(line), normal_style))
     flush_table()
     doc.build(story)
     buffer.seek(0)
@@ -446,50 +495,51 @@ def save_report_files(report_text, pdf_bytes):
 # ════════════════════════════════════════════════════════
 def run_analysis():
     """
-    Lance l'analyse réelle via les 3 agents CrewAI + Mistral.
+    Lance l'analyse réelle via les 3 agents CrewAI + LLM.
     - Agent 1 (Analyste) : appelle StockAnalysisTool sur chaque ticker
     - Agent 2 (Risques)  : appelle PortfolioRiskTool
     - Agent 3 (Stratège) : appelle AllocationTool et rédige le rapport
     Les callbacks step_callback / task_callback mettent à jour le journal en temps réel.
     Si la clé API est absente ou en cas d'erreur, repli sur le calcul local.
     """
-    st.session_state.running   = True
-    st.session_state.done      = False
-    st.session_state.logs      = []
-    st.session_state.alloc_data   = None
-    st.session_state.report_text  = None
+    st.session_state.running = True
+    st.session_state.done = False
+    st.session_state.logs = []
+    st.session_state.alloc_data = None
+    st.session_state.report_text = None
     st.session_state.dashboard_data = None
-    st.session_state.pdf_bytes    = None
-    st.session_state.start_time   = time.time()
+    st.session_state.pdf_bytes = None
+    st.session_state.start_time = time.time()
     st.session_state.agent_states = ["idle", "idle", "idle"]
 
     tickers = st.session_state.tickers
-    budget  = st.session_state.budget
+    budget = st.session_state.budget
     profile = st.session_state.profile
 
     # ── 1. Données de marché (indépendant des agents, pour le dashboard) ──
     add_log("log-system", "Système", "Récupération des données de marché (yfinance)…")
-    prices    = fetch_prices(tickers)
+    prices = fetch_prices(tickers)
     dashboard = compute_dashboard_data(tickers)
-    st.session_state.prices         = prices
+    st.session_state.prices = prices
     st.session_state.dashboard_data = dashboard
     for t, p in prices.items():
         add_log("log-agent1", "Analyste", f"{t} → {p} EUR" if p else f"{t} → donnée indisponible")
 
     # ── 2. Vérification de la clé API ──────────────────────────────────
-    api_key = os.getenv("MISTRAL_API_KEY", "")
+    api_key = os.getenv(api_key_var(), "")
     use_crew = bool(api_key)
 
     if not use_crew:
-        add_log("log-system", "Système", "⚠ MISTRAL_API_KEY manquante → mode calcul local")
+        add_log("log-system", "Système", "⚠ clé API manquante → mode calcul local")
 
     # ── 3. Mode CrewAI (agents réels) ──────────────────────────────────
     if use_crew:
         try:
             from crewai import Crew, Process
+            from crewai.agents.parser import AgentAction, AgentFinish
+
             from src.agents import create_agents
             from src.tasks import create_tasks
-            from crewai.agents.parser import AgentAction, AgentFinish
 
             # Compteur partagé pour suivre la tâche en cours
             task_idx = [0]
@@ -500,16 +550,16 @@ def run_analysis():
                 st.session_state.agent_states[idx] = "running"
                 if isinstance(step, AgentAction):
                     tool_input = str(step.tool_input)[:80]
-                    add_log(LOG_CLASSES[idx], LOG_NAMES[idx],
-                            f"→ outil [{step.tool}] : {tool_input}…")
+                    add_log(
+                        LOG_CLASSES[idx], LOG_NAMES[idx], f"→ outil [{step.tool}] : {tool_input}…"
+                    )
                 elif isinstance(step, AgentFinish):
-                    add_log(LOG_CLASSES[idx], LOG_NAMES[idx],
-                            f"Réponse finale produite ✓")
+                    add_log(LOG_CLASSES[idx], LOG_NAMES[idx], "Réponse finale produite ✓")
 
             def task_callback(task_output):
                 """Appelé quand une tâche est terminée, reçoit un TaskOutput."""
                 role = getattr(task_output, "agent", "")
-                idx  = AGENT_ROLES_IDX.get(role, task_idx[0])
+                idx = AGENT_ROLES_IDX.get(role, task_idx[0])
                 st.session_state.agent_states[idx] = "done"
                 add_log(LOG_CLASSES[idx], LOG_NAMES[idx], "Tâche complétée ✓")
                 task_idx[0] = idx + 1
@@ -517,7 +567,7 @@ def run_analysis():
                     st.session_state.agent_states[idx + 1] = "running"
 
             # Initialisation des agents et tâches
-            add_log("log-system", "Système", "Initialisation des agents CrewAI + Mistral…")
+            add_log("log-system", "Système", "Initialisation des agents CrewAI + LLM…")
             st.session_state.agent_states = ["running", "idle", "idle"]
 
             analyste, gestionnaire, stratege = create_agents()
@@ -527,15 +577,20 @@ def run_analysis():
                 agents=[analyste, gestionnaire, stratege],
                 tasks=tasks,
                 process=Process.sequential,
+                max_rpm=20,
                 verbose=False,
                 step_callback=step_callback,
                 task_callback=task_callback,
             )
 
-            add_log("log-system", "Système",
-                    f"Lancement du pipeline : {len(tickers)} actif(s) · {budget:,.0f} EUR · {profile}")
-            add_log("log-system", "Système",
-                    "⏳ L'analyse IA prend 1–3 minutes, merci de patienter…")
+            add_log(
+                "log-system",
+                "Système",
+                f"Lancement du pipeline : {len(tickers)} actif(s) · {budget:,.0f} EUR · {profile}",
+            )
+            add_log(
+                "log-system", "Système", "⏳ L'analyse IA prend 1–3 minutes, merci de patienter…"
+            )
 
             # ── LANCEMENT RÉEL DES AGENTS ──
             resultat = crew.kickoff()
@@ -543,9 +598,13 @@ def run_analysis():
             # ── Lecture du rapport généré par le Stratège ──
             report_path = "reports/rapport_portefeuille.md"
             if os.path.exists(report_path):
-                with open(report_path, "r", encoding="utf-8") as f:
+                with open(report_path, encoding="utf-8") as f:
                     report = f.read()
-                add_log("log-agent3", "Stratège", "Rapport IA lu depuis reports/rapport_portefeuille.md ✓")
+                add_log(
+                    "log-agent3",
+                    "Stratège",
+                    "Rapport IA lu depuis reports/rapport_portefeuille.md ✓",
+                )
             else:
                 report = str(resultat)
                 add_log("log-agent3", "Stratège", "Rapport IA extrait du résultat crew ✓")
@@ -555,16 +614,18 @@ def run_analysis():
             # pour alimenter les widgets barres/graphique de l'interface)
             alloc = compute_allocation(tickers, budget, prices, profile)
             total_investi = sum(a["montant_reel"] for a in alloc)
-            add_log("log-agent3", "Stratège",
-                    f"Total investi : {total_investi:,.0f} EUR / {budget:,.0f} EUR")
+            add_log(
+                "log-agent3",
+                "Stratège",
+                f"Total investi : {total_investi:,.0f} EUR / {budget:,.0f} EUR",
+            )
 
             st.session_state.report_text = report
-            st.session_state.alloc_data  = alloc
+            st.session_state.alloc_data = alloc
 
             # PDF
             pdf_bytes = generate_pdf_bytes(
-                report, alloc,
-                dashboard.get("summary") if dashboard else None
+                report, alloc, dashboard.get("summary") if dashboard else None
             )
             save_report_files(report, pdf_bytes)
             st.session_state.pdf_bytes = pdf_bytes
@@ -574,8 +635,8 @@ def run_analysis():
             st.session_state.agent_states = ["done", "done", "done"]
             add_log("log-success", "Système", "✓ Analyse CrewAI terminée avec succès")
 
-        except Exception as e:
-            # Repli sur calcul local en cas d'erreur
+        except Exception as e:  # noqa: BLE001 - any crew failure must fall back to local mode
+            logger.exception("CrewAI run failed")
             add_log("log-system", "Système", f"Erreur CrewAI : {str(e)[:120]}")
             add_log("log-system", "Système", "Repli sur le calcul local…")
             use_crew = False  # → tombe dans le bloc local ci-dessous
@@ -599,22 +660,25 @@ def run_analysis():
         report = build_rich_report(tickers, budget, profile, alloc, dashboard)
 
         total_investi = sum(a["montant_reel"] for a in alloc)
-        add_log("log-agent3", "Stratège", f"Total investi : {total_investi:,.0f} EUR / {budget:,.0f} EUR")
+        add_log(
+            "log-agent3",
+            "Stratège",
+            f"Total investi : {total_investi:,.0f} EUR / {budget:,.0f} EUR",
+        )
 
         pdf_bytes = generate_pdf_bytes(
-            report, alloc,
-            dashboard.get("summary") if dashboard else None
+            report, alloc, dashboard.get("summary") if dashboard else None
         )
         save_report_files(report, pdf_bytes)
 
-        st.session_state.report_text  = report
-        st.session_state.alloc_data   = alloc
-        st.session_state.pdf_bytes    = pdf_bytes
+        st.session_state.report_text = report
+        st.session_state.alloc_data = alloc
+        st.session_state.pdf_bytes = pdf_bytes
         st.session_state.agent_states = ["done", "done", "done"]
         add_log("log-success", "Système", "✓ Analyse locale terminée")
 
     st.session_state.running = False
-    st.session_state.done    = True
+    st.session_state.done = True
 
 
 # ════════════════════════════════════════════════════════
@@ -625,7 +689,9 @@ with st.sidebar:
     st.markdown("---")
 
     st.markdown("**Actions à analyser**")
-    ticker_input = st.text_input("Ajouter un ticker", placeholder="ex: AAPL, BNP.PA", label_visibility="collapsed")
+    ticker_input = st.text_input(
+        "Ajouter un ticker", placeholder="ex: AAPL, BNP.PA", label_visibility="collapsed"
+    )
     _, col_add = st.columns([3, 1])
     with col_add:
         if st.button("＋", key="add_btn"):
@@ -645,14 +711,17 @@ with st.sidebar:
 
     st.markdown("---")
     st.session_state.budget = st.number_input(
-        "BUDGET (EUR)", min_value=100.0, max_value=1_000_000.0,
-        value=st.session_state.budget, step=500.0
+        "BUDGET (EUR)",
+        min_value=100.0,
+        max_value=1_000_000.0,
+        value=st.session_state.budget,
+        step=500.0,
     )
 
     st.markdown("---")
     st.markdown("**PROFIL DE RISQUE**")
     profile_options = ["conservative", "moderate", "aggressive"]
-    profile_labels  = [" Conservateur", " Modéré", " Agressif"]
+    profile_labels = [" Conservateur", " Modéré", " Agressif"]
     idx = profile_options.index(st.session_state.profile)
     chosen = st.radio("Profil", options=profile_labels, index=idx, label_visibility="collapsed")
     st.session_state.profile = profile_options[profile_labels.index(chosen)]
@@ -660,37 +729,54 @@ with st.sidebar:
     st.markdown("---")
 
     # Statut clé API
-    api_key = os.getenv("MISTRAL_API_KEY", "")
+    api_key = os.getenv(api_key_var(), "")
     if api_key:
-        st.markdown('<span class="badge badge-green">✓ Clé Mistral configurée — agents IA actifs</span>', unsafe_allow_html=True)
+        st.markdown(
+            '<span class="badge badge-green">✓ Clé LLM configurée — agents IA actifs</span>',
+            unsafe_allow_html=True,
+        )
     else:
-        st.markdown('<span class="badge badge-red">✗ Clé Mistral manquante → mode local</span>', unsafe_allow_html=True)
-        st.caption("Ajoutez MISTRAL_API_KEY dans .env pour activer les agents IA")
+        st.markdown(
+            '<span class="badge badge-red">✗ Clé LLM manquante → mode local</span>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Ajoutez la clé API (voir .env.example) dans .env pour activer les agents IA")
 
     if REPORTLAB_AVAILABLE:
-        st.markdown('<span class="badge badge-green">✓ Export PDF actif</span>', unsafe_allow_html=True)
+        st.markdown(
+            '<span class="badge badge-green">✓ Export PDF actif</span>', unsafe_allow_html=True
+        )
     else:
-        st.markdown('<span class="badge badge-orange">PDF inactif : pip install reportlab</span>', unsafe_allow_html=True)
+        st.markdown(
+            '<span class="badge badge-orange">PDF inactif : pip install reportlab</span>',
+            unsafe_allow_html=True,
+        )
 
     st.markdown("---")
     can_launch = len(st.session_state.tickers) > 0 and not st.session_state.running
     if st.button(
         "⟳ Analyse en cours…" if st.session_state.running else "▶ Lancer l'analyse",
-        disabled=not can_launch, key="launch"
+        disabled=not can_launch,
+        key="launch",
     ):
         run_analysis()
         st.rerun()
 
     st.markdown("---")
-    mode_label = "CrewAI + Mistral" if api_key else "Calcul local (fallback)"
+    mode_label = "CrewAI + LLM" if api_key else "Calcul local (fallback)"
     st.caption(f"Mode : {mode_label} · Données : yfinance")
 
 
 # ════════════════════════════════════════════════════════
 # CONTENU PRINCIPAL
 # ════════════════════════════════════════════════════════
-icon, title, sub = "📊", "Gestionnaire de Portefeuille", "Agentic AI · CrewAI + Mistral · Dashboard enrichi"
-st.markdown(f"""
+icon, title, sub = (
+    "📊",
+    "Gestionnaire de Portefeuille",
+    "Agentic AI · CrewAI + LLM · Dashboard enrichi",
+)
+st.markdown(
+    f"""
 <div class="app-header">
   <div style="font-size:28px">{icon}</div>
   <div>
@@ -698,23 +784,43 @@ st.markdown(f"""
     <p class="app-sub">{sub}</p>
   </div>
 </div>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 # Métriques
 col1, col2, col3, col4 = st.columns(4)
 em, pl, _ = PROFILE_META[st.session_state.profile]
 with col1:
-    st.markdown(f"""<div class="metric-card"><div class="metric-label">BUDGET</div><div class="metric-value">{st.session_state.budget:,.0f}</div><div class="metric-unit">EUR</div></div>""", unsafe_allow_html=True)
+    st.markdown(
+        f"""<div class="metric-card"><div class="metric-label">BUDGET</div><div class="metric-value">{st.session_state.budget:,.0f}</div><div class="metric-unit">EUR</div></div>""",
+        unsafe_allow_html=True,
+    )
 with col2:
-    st.markdown(f"""<div class="metric-card"><div class="metric-label">TITRES</div><div class="metric-value">{len(st.session_state.tickers)}</div><div class="metric-unit">actions</div></div>""", unsafe_allow_html=True)
+    st.markdown(
+        f"""<div class="metric-card"><div class="metric-label">TITRES</div><div class="metric-value">{len(st.session_state.tickers)}</div><div class="metric-unit">actions</div></div>""",
+        unsafe_allow_html=True,
+    )
 with col3:
-    st.markdown(f"""<div class="metric-card"><div class="metric-label">PROFIL</div><div class="metric-value" style="font-size:20px;padding-top:4px;">{em} {pl}</div><div class="metric-unit"> </div></div>""", unsafe_allow_html=True)
+    st.markdown(
+        f"""<div class="metric-card"><div class="metric-label">PROFIL</div><div class="metric-value" style="font-size:20px;padding-top:4px;">{em} {pl}</div><div class="metric-unit"> </div></div>""",
+        unsafe_allow_html=True,
+    )
 with col4:
-    api_ok = bool(os.getenv("MISTRAL_API_KEY", ""))
-    statut  = "En cours…" if st.session_state.running else ("Terminé ✓" if st.session_state.done else "En attente")
-    couleur = "#60a5fa" if st.session_state.running else ("#3ecf8e" if st.session_state.done else "#333")
+    api_ok = llm_configured()
+    statut = (
+        "En cours…"
+        if st.session_state.running
+        else ("Terminé ✓" if st.session_state.done else "En attente")
+    )
+    couleur = (
+        "#60a5fa" if st.session_state.running else ("#3ecf8e" if st.session_state.done else "#333")
+    )
     mode_txt = "CrewAI" if api_ok else "Local"
-    st.markdown(f"""<div class="metric-card"><div class="metric-label">STATUT · {mode_txt}</div><div class="metric-value" style="font-size:18px;padding-top:6px;color:{couleur};">{statut}</div><div class="metric-unit"> </div></div>""", unsafe_allow_html=True)
+    st.markdown(
+        f"""<div class="metric-card"><div class="metric-label">STATUT · {mode_txt}</div><div class="metric-value" style="font-size:18px;padding-top:6px;color:{couleur};">{statut}</div><div class="metric-unit"> </div></div>""",
+        unsafe_allow_html=True,
+    )
 
 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -723,30 +829,38 @@ left, right = st.columns([1, 1], gap="large")
 with left:
     st.markdown("**Pipeline des agents**")
     AGENTS = [
-        ("🔭", "Analyste de marché",      "Prix, fondamentaux, variation",      "log-agent1"),
-        ("🛡",  "Gestionnaire des risques", "Sharpe, drawdown, corrélation",      "log-agent2"),
-        ("🏆", "Stratège de portefeuille", "Allocation optimale + rapport IA",   "log-agent3"),
+        ("🔭", "Analyste de marché", "Prix, fondamentaux, variation", "log-agent1"),
+        ("🛡", "Gestionnaire des risques", "Sharpe, drawdown, corrélation", "log-agent2"),
+        ("🏆", "Stratège de portefeuille", "Allocation optimale + rapport IA", "log-agent3"),
     ]
     state_labels = {
-        "idle":    ("dot-idle",    "En attente"),
+        "idle": ("dot-idle", "En attente"),
         "running": ("dot-running", "En cours…"),
-        "done":    ("dot-done",    "Terminé ✓"),
+        "done": ("dot-done", "Terminé ✓"),
     }
     for i, (icon_a, name, task, _) in enumerate(AGENTS):
         s = st.session_state.agent_states[i]
         dot_cls, state_txt = state_labels[s]
-        card_cls = "agent-card " + ("running" if s == "running" else ("done" if s == "done" else ""))
-        st.markdown(f"""
+        card_cls = "agent-card " + (
+            "running" if s == "running" else ("done" if s == "done" else "")
+        )
+        st.markdown(
+            f"""
         <div class="{card_cls}">
           <div class="agent-header"><span style="font-size:18px">{icon_a}</span><span class="agent-name">{name}</span><span style="flex:1"></span><span class="dot {dot_cls}"></span></div>
           <div class="agent-status">{task} · {state_txt}</div>
-        </div>""", unsafe_allow_html=True)
+        </div>""",
+            unsafe_allow_html=True,
+        )
 
     st.markdown("<br>**Journal en temps réel**", unsafe_allow_html=True)
     if st.session_state.logs:
         st.markdown(render_logs(), unsafe_allow_html=True)
     else:
-        st.markdown('<div class="log-terminal"><span class="log-system">En attente du lancement…</span></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="log-terminal"><span class="log-system">En attente du lancement…</span></div>',
+            unsafe_allow_html=True,
+        )
 
 with right:
     st.markdown("**Allocation du portefeuille**")
@@ -758,10 +872,10 @@ with right:
             color = BAR_COLORS[i % len(BAR_COLORS)]
             rows_html += f"""
             <div class="alloc-row">
-              <span class="alloc-ticker">{a['ticker']}</span>
-              <div class="alloc-bar-bg"><div class="alloc-bar-fill" style="width:{a['poids']}%;background:{color};"></div></div>
-              <span class="alloc-pct">{a['poids']}%</span>
-              <span class="alloc-amt">{a['montant_reel']:,.0f} EUR</span>
+              <span class="alloc-ticker">{a["ticker"]}</span>
+              <div class="alloc-bar-bg"><div class="alloc-bar-fill" style="width:{a["poids"]}%;background:{color};"></div></div>
+              <span class="alloc-pct">{a["poids"]}%</span>
+              <span class="alloc-amt">{a["montant_reel"]:,.0f} EUR</span>
             </div>"""
         rows_html += f"""
         <div style="margin-top:12px;padding-top:12px;border-top:1px solid #1a1a1a;display:flex;justify-content:space-between;">
@@ -776,7 +890,10 @@ with right:
         df_chart = pd.DataFrame(st.session_state.alloc_data)
         st.bar_chart(df_chart.set_index("ticker")["poids"], height=180)
     else:
-        st.markdown("""<div class="agent-card" style="text-align:center;padding:40px;color:#333;"><div style="font-size:32px;margin-bottom:8px;">📊</div><div style="font-size:13px;">Lancez l'analyse pour voir l'allocation</div></div>""", unsafe_allow_html=True)
+        st.markdown(
+            """<div class="agent-card" style="text-align:center;padding:40px;color:#333;"><div style="font-size:32px;margin-bottom:8px;">📊</div><div style="font-size:13px;">Lancez l'analyse pour voir l'allocation</div></div>""",
+            unsafe_allow_html=True,
+        )
 
     st.markdown("<br>**Rapport généré**", unsafe_allow_html=True)
     if st.session_state.report_text:
@@ -784,20 +901,27 @@ with right:
             st.markdown(st.session_state.report_text)
         c1, c2 = st.columns(2)
         with c1:
-            st.download_button("⬇ Télécharger le rapport Markdown",
-                               data=st.session_state.report_text,
-                               file_name="rapport_portefeuille.md",
-                               mime="text/markdown")
+            st.download_button(
+                "⬇ Télécharger le rapport Markdown",
+                data=st.session_state.report_text,
+                file_name="rapport_portefeuille.md",
+                mime="text/markdown",
+            )
         with c2:
             if st.session_state.pdf_bytes:
-                st.download_button("📄 Télécharger le rapport PDF",
-                                   data=st.session_state.pdf_bytes,
-                                   file_name="rapport_portefeuille.pdf",
-                                   mime="application/pdf")
+                st.download_button(
+                    "📄 Télécharger le rapport PDF",
+                    data=st.session_state.pdf_bytes,
+                    file_name="rapport_portefeuille.pdf",
+                    mime="application/pdf",
+                )
             else:
                 st.warning("PDF non disponible. Installez reportlab.")
     else:
-        st.markdown("""<div class="agent-card" style="text-align:center;padding:30px;color:#333;"><div style="font-size:13px;">Le rapport apparaîtra ici après l'analyse</div></div>""", unsafe_allow_html=True)
+        st.markdown(
+            """<div class="agent-card" style="text-align:center;padding:30px;color:#333;"><div style="font-size:13px;">Le rapport apparaîtra ici après l'analyse</div></div>""",
+            unsafe_allow_html=True,
+        )
 
 # Dashboard enrichi
 st.markdown("---")
@@ -805,8 +929,8 @@ st.markdown("## Tableau de bord financier enrichi")
 
 dashboard = st.session_state.dashboard_data
 if dashboard and dashboard.get("summary") is not None:
-    summary    = dashboard["summary"]
-    corr       = dashboard.get("corr")
+    summary = dashboard["summary"]
+    corr = dashboard.get("corr")
     cumulative = dashboard.get("cumulative")
 
     st.markdown("### Indicateurs clés par actif")
@@ -826,4 +950,6 @@ if dashboard and dashboard.get("summary") is not None:
     st.markdown("### Prix historiques")
     st.line_chart(dashboard["prices_history"])
 else:
-    st.info("Lancez l'analyse pour afficher les indicateurs enrichis : performance, volatilité, Sharpe, drawdown et corrélation.")
+    st.info(
+        "Lancez l'analyse pour afficher les indicateurs enrichis : performance, volatilité, Sharpe, drawdown et corrélation."
+    )

@@ -5,25 +5,40 @@
 
 ---
 
+## ⚠️ Important : Intégrité des données financières
+
+**Règle stricte** : Les agents IA n'inventent **JAMAIS** de chiffres financiers.
+- Toutes les données chiffrées proviennent de **yfinance** ou de calculs Python testés
+- Si une donnée est indisponible → l'agent l'indique explicitement ("donnée indisponible")
+- Pas de fallback sur "connaissances générales" pour les métriques
+
+*Ce projet respecte les standards AMF/ESMA : transparence et traçabilité des données.*
+
+---
+
 ## Architecture du projet
 
 ```
-portfolio_crew/
+portfolio_crew_fixed/
 │
-├── main.py                  # Point d'entrée principal
-├── demo.py                  # Test sans clé API (données réelles)
+├── main.py                  # Point d'entrée principal (CLI)
+├── app.py                   # Interface web Streamlit
+├── demo.py                  # Test sans clé API (données réelles yfinance)
 ├── requirements.txt         # Dépendances Python
 ├── .env.example             # Template de configuration
 ├── .env                     # ← À créer (votre clé API)
 │
 ├── src/
 │   ├── __init__.py
-│   ├── agents.py            # Définition des 3 agents CrewAI
+│   ├── agents.py            # Définition des 3 agents CrewAI + Mistral
 │   ├── tasks.py             # Tâches séquentielles des agents
-│   └── tools.py             # Outils personnalisés (yfinance)
+│   └── tools.py             # 3 outils : analyse, risque, allocation
 │
-└── reports/
-    └── rapport_portefeuille.md   # ← Généré après analyse
+├── reports/
+│   ├── report_pdf.py        # Conversion markdown → PDF
+│   └── rapport_portefeuille.md   # ← Généré après analyse (git-ignored)
+│
+└── .gitignore               # Exclusions git (.env, reports/, __pycache__)
 ```
 
 ---
@@ -51,7 +66,7 @@ portfolio_crew/
 ### 1. Cloner / télécharger le projet
 
 ```bash
-cd portfolio_crew
+cd portfolio_crew_fixed
 ```
 
 ### 2. Créer un environnement virtuel
@@ -173,6 +188,8 @@ MISTRAL_MODEL=mistral-small-latest
 | `No data found for ticker` | Vérifier le symbole sur Yahoo Finance |
 | `Rate limit exceeded` | Attendre 60s, le quota Mistral gratuit est limité |
 | `ModuleNotFoundError` | Relancer `pip install -r requirements.txt` |
+| `Cookie/crumb fetch failed (SSLError)` | Le chemin du projet/venv contient des accents : copier `certifi/cacert.pem` dans un dossier ASCII et définir `CURL_CA_BUNDLE` dans `.env` |
+| `Rate limit reached ... TPM` (Groq) | Palier gratuit limité en tokens/minute : analyser 2-3 tickers max ; les retries automatiques absorbent les pics |
 
 ### Trouver les bons symboles boursiers
 

@@ -1,0 +1,264 @@
+"""
+tools.py — CrewAI 0.28 tools for portfolio analysis
+Uses the @tool decorator from crewai.tools
+Integrates yfinance with robust error handling and retry logic.
+"""
+
+import json
+import logging
+import time
+
+import pandas as pd
+import yfinance as yf
+from crewai.tools import tool
+
+from src.finance import (
+    allocate,
+    annualized_return,
+    annualized_volatility,
+    inverse_volatility_weights,
+    max_drawdown,
+    sharpe_ratio,
+)
+
+logger = logging.getLogger(__name__)
+
+# Errors that mean 'the data is unusable', as opposed to programming bugs.
+DATA_ERRORS = (ValueError, KeyError, IndexError, ZeroDivisionError)
+
+FALLBACK_MSG = (
+    "⚠️ DATA UNAVAILABLE — Yahoo Finance data temporarily inaccessible. "
+    "Cannot produce reliable analysis without real data. "
+    "Report 'donnée indisponible' instead of estimating or inventing. "
+    "NEVER invent metrics — better incomplete+honest than invented+false."
+)
+
+
+def _download(tickers, period: str = "1y", retries: int = 3) -> pd.DataFrame:
+    """yf.download with retry and linear backoff; empty DataFrame if all attempts fail."""
+    wait = 4
+    for attempt in range(retries):
+        try:
+            raw = yf.download(
+                tickers, period=period, auto_adjust=True, progress=False, threads=False
+            )
+        except Exception as exc:  # noqa: BLE001 - yfinance/curl raise many unrelated types
+            logger.warning(
+                "yfinance download failed (attempt %d/%d): %s", attempt + 1, retries, exc
+            )
+        else:
+            if not raw.empty:
+                return raw
+            logger.warning("yfinance returned no data (attempt %d/%d)", attempt + 1, retries)
+        time.sleep(wait * (attempt + 1))
+    return pd.DataFrame()
+
+
+def _extract_close(raw, tickers):
+    """Extract Close column regardless of ticker count."""
+    if raw.empty:
+        return pd.DataFrame()
+    if isinstance(raw.columns, pd.MultiIndex):
+        if "Close" in raw.columns.get_level_values(0):
+            data = raw["Close"]
+        else:
+            return pd.DataFrame()
+    elif "Close" in raw.columns:
+        data = raw[["Close"]]
+        name = tickers if isinstance(tickers, str) else (tickers[0] if len(tickers) == 1 else None)
+        if name:
+            data.columns = [name]
+    else:
+        data = raw
+
+    if isinstance(data, pd.Series):
+        name = tickers if isinstance(tickers, str) else tickers[0]
+        data = data.to_frame(name=name)
+
+    return data
+
+
+# Tool 1: Stock analysis
+@tool("stock_analysis")
+def analyze_stock(ticker: str) -> str:
+    """
+    Analyze a stock ticker: current price, variations, fundamentals (P/E, dividend, market cap).
+    Provides key data to evaluate the stock.
+
+    Args:
+        ticker: Stock symbol, e.g., AAPL, MSFT, BNP.PA
+
+    Returns:
+        JSON string with stock analysis data
+    """
+    t = ticker.upper().strip()
+    try:
+        raw = _download(t, period="1mo")
+        data = _extract_close(raw, t)
+
+        if data.empty or t not in data.columns:
+            return FALLBACK_MSG
+
+        prices = data[t].dropna()
+        if len(prices) < 2:
+            return FALLBACK_MSG
+
+        current_price = round(float(prices.iloc[-1]), 2)
+        prev_price = round(float(prices.iloc[-2]), 2)
+        start_price = round(float(prices.iloc[0]), 2)
+        variation_1d = (
+            round(((current_price - prev_price) / prev_price) * 100, 2) if prev_price else 0
+        )
+        variation_1m = (
+            round(((current_price - start_price) / start_price) * 100, 2) if start_price else 0
+        )
+
+        # Fundamentals via .info (best-effort)
+        info = {}
+        try:
+            time.sleep(1)
+            info = yf.Ticker(t).info or {}
+        except Exception as exc:  # noqa: BLE001 - fundamentals are best-effort
+            logger.warning("Could not fetch fundamentals for %s: %s", t, exc)
+
+        result = {
+            "ticker": t,
+            "name": info.get("longName", t),
+            "sector": info.get("sector", "N/A"),
+            "current_price": f"{current_price} {info.get('currency', 'USD')}",
+            "variation_1d": f"{variation_1d}%",
+            "variation_1m": f"{variation_1m}%",
+            "market_cap": info.get("marketCap", "N/A"),
+            "pe_ratio": round(info.get("trailingPE", 0), 2) if info.get("trailingPE") else "N/A",
+            "dividend_yield": info.get("dividendYield", "N/A"),
+            "52w_high": info.get("fiftyTwoWeekHigh", "N/A"),
+            "52w_low": info.get("fiftyTwoWeekLow", "N/A"),
+            "avg_volume": info.get("averageVolume", "N/A"),
+            "beta": round(info.get("beta", 0), 2) if info.get("beta") else "N/A",
+        }
+        return json.dumps(result, ensure_ascii=False, indent=2)
+
+    except DATA_ERRORS:
+        logger.exception("Tool failed on unusable data")
+        return FALLBACK_MSG
+
+
+# Tool 2: Portfolio risk analysis
+@tool("portfolio_risk")
+def analyze_portfolio_risk(tickers: str, period: str = "1y") -> str:
+    """
+    Calculate portfolio risk metrics: annual volatility, Sharpe ratio, max drawdown, correlation.
+
+    Args:
+        tickers: Stock symbols separated by commas, e.g., AAPL,MSFT
+        period: Time period (1mo, 3mo, 6mo, 1y, 2y)
+
+    Returns:
+        JSON string with risk metrics
+    """
+    ticker_list = [t.strip().upper() for t in tickers.split(",")]
+    try:
+        raw = _download(ticker_list, period=period)
+        data = _extract_close(raw, ticker_list)
+
+        if data.empty:
+            return FALLBACK_MSG
+
+        returns = data.pct_change().dropna()
+        metrics = {}
+
+        for t in ticker_list:
+            if t not in returns.columns:
+                continue
+            r = returns[t].dropna()
+            if r.empty:
+                continue
+            vol = annualized_volatility(r)
+            rend = annualized_return(r)
+            metrics[t] = {
+                "annual_volatility": f"{round(vol * 100, 2)}%",
+                "annual_return_estimate": f"{round(rend * 100, 2)}%",
+                "sharpe_ratio": round(sharpe_ratio(rend, vol), 2),
+                "max_drawdown": f"{round(max_drawdown(r) * 100, 2)}%",
+            }
+
+        available = [t for t in ticker_list if t in returns.columns]
+        correlation = returns[available].corr().round(2).to_dict() if len(available) > 1 else {}
+
+        result = {
+            "period_analyzed": period,
+            "metrics_per_asset": metrics,
+            "correlation_matrix": correlation if correlation else "N/A (single asset)",
+        }
+        return json.dumps(result, ensure_ascii=False, indent=2)
+
+    except DATA_ERRORS:
+        logger.exception("Tool failed on unusable data")
+        return FALLBACK_MSG
+
+
+# Tool 3: Optimal allocation
+@tool("portfolio_allocation")
+def calculate_optimal_allocation(tickers: str, budget: float = 10000.0) -> str:
+    """
+    Calculate optimal portfolio allocation (risk-parity) based on budget and profile.
+    Returns recommended weights and number of shares to buy.
+
+    Args:
+        tickers: Stock symbols separated by commas, e.g., AAPL,MSFT
+        budget: Total investment budget in EUR/USD
+
+    Returns:
+        JSON string with allocation recommendations
+    """
+    ticker_list = [t.strip().upper() for t in tickers.split(",")]
+    try:
+        raw = _download(ticker_list, period="6mo")
+        data = _extract_close(raw, ticker_list)
+
+        if data.empty:
+            return FALLBACK_MSG
+
+        current_prices: dict[str, float] = {}
+        volatilities: dict[str, float] = {}
+
+        for t in ticker_list:
+            if t not in data.columns:
+                continue
+            col = data[t].dropna()
+            if col.empty:
+                continue
+            current_prices[t] = round(float(col.iloc[-1]), 2)
+            vol = annualized_volatility(col.pct_change().dropna())
+            if vol > 0:
+                volatilities[t] = vol
+
+        weights = {t: round(w, 4) for t, w in inverse_volatility_weights(volatilities).items()}
+        if not weights:
+            return FALLBACK_MSG
+
+        positions, cash = allocate(weights, current_prices, budget)
+        allocations = {
+            t: {
+                "recommended_weight": f"{round(p.weight * 100, 1)}%",
+                "allocated_amount": str(round(p.target_amount, 2)),
+                "current_price": str(p.price),
+                "shares_to_buy": p.shares,
+                "real_amount_invested": str(round(p.invested, 2)),
+            }
+            for t, p in positions.items()
+        }
+        total_invested = budget - cash
+
+        result = {
+            "total_budget": budget,
+            "total_invested": round(total_invested, 2),
+            "cash_remaining": round(budget - total_invested, 2),
+            "method": "Risk-Parity (inverse volatility)",
+            "allocations": allocations,
+        }
+        return json.dumps(result, ensure_ascii=False, indent=2)
+
+    except DATA_ERRORS:
+        logger.exception("Tool failed on unusable data")
+        return FALLBACK_MSG
