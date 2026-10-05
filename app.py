@@ -1,6 +1,6 @@
 """
 app.py — Interface web Streamlit enrichie
-Gestionnaire de Portefeuille Agentic AI
+PortfolioPilot — Agentic portfolio analysis
 
 CORRECTION PRINCIPALE :
 - run_analysis() appelle maintenant réellement les agents CrewAI via crew.kickoff()
@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 # ── Configuration de la page ──────────────────────────────
 st.set_page_config(
-    page_title="Gestionnaire de Portefeuille AI",
+    page_title="PortfolioPilot",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -754,7 +754,7 @@ with st.sidebar:
 # ════════════════════════════════════════════════════════
 icon, title, sub = (
     "📊",
-    "Gestionnaire de Portefeuille",
+    "PortfolioPilot",
     "Agentic AI · CrewAI + LLM · Dashboard enrichi",
 )
 st.markdown(

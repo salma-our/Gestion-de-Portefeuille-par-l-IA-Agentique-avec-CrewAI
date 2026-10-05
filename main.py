@@ -44,7 +44,7 @@ PORTFOLIOS_DEFAUT = {
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description=" Gestionnaire de Portefeuille Agentic AI avec CrewAI"
+        description="PortfolioPilot — multi-agent portfolio analysis (CrewAI)"
     )
     parser.add_argument(
         "--tickers",
@@ -69,7 +69,7 @@ def parse_arguments():
 
 def afficher_banniere():
     print("\n" + "═" * 60)
-    print("    GESTION DE PORTEFEUILLE — Agentic AI")
+    print("    PortfolioPilot — Agentic portfolio analysis")
     print("    Powered by CrewAI + LLM (gratuit)")
     print("═" * 60)
     print(f"    Démarrage : {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
