@@ -32,6 +32,15 @@ result as a footer: required sections present, every financial number traceable 
 missing data acknowledged, allocation consistent with the budget, and no figure in the LLM narrative.
 Prices are converted to EUR with Yahoo FX rates computed in Python.
 
+### Evaluation
+
+`python -m evaluation.run` replays 12 scenarios offline (deterministic synthetic market, fixed narrative, no
+LLM): one invalid ticker, all tickers invalid, a single ticker, a budget below one share, a zero or huge budget,
+short price history, mixed currencies (USD/EUR/GBp), and three misbehaving narratives (invented return,
+invented FX rate, missing conclusion) that the guardrails must reject. Each scenario checks that the pipeline
+does not crash, that the guardrail verdict is the expected one, that missing blocks are flagged as
+`donnée indisponible`, and that the allocation never exceeds the budget. The same scenarios run in `pytest`.
+
 ### Backtest
 
 Compares equal weight, inverse volatility, minimum variance, maximum Sharpe and equal-risk-contribution
@@ -57,6 +66,7 @@ src/pipeline.py         Report assembly: numbers + narrative + validation footer
 src/agents.py, tasks.py Agents and sequential tasks
 src/llm.py              LLM provider configuration
 reports/report_pdf.py   Markdown -> PDF
+evaluation/             Offline evaluation scenarios and runner
 tests/                  pytest suite (no network)
 ```
 

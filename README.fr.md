@@ -32,6 +32,16 @@ résultat en pied de page : sections obligatoires présentes, chaque chiffre tra
 données manquantes signalées, allocation cohérente avec le budget, et aucun chiffre dans le commentaire du LLM.
 Les prix sont convertis en EUR avec les taux de change Yahoo, calculés en Python.
 
+### Évaluation
+
+`python -m evaluation.run` rejoue 12 scénarios hors ligne (marché synthétique déterministe, commentaire fixe,
+sans LLM) : un ticker invalide, tous les tickers invalides, un seul titre, un budget inférieur au prix d'une
+action, un budget nul ou énorme, un historique trop court, des devises mixtes (USD/EUR/GBp) et trois commentaires
+fautifs (rendement inventé, taux de change inventé, conclusion absente) que les garde-fous doivent rejeter.
+Chaque scénario vérifie l'absence de plantage, le verdict attendu des garde-fous, le signalement des blocs
+manquants (`donnée indisponible`) et que l'allocation ne dépasse jamais le budget. Les mêmes scénarios
+tournent dans `pytest`.
+
 ### Backtest
 
 Compare les portefeuilles équipondéré, volatilité inverse, variance minimale, Sharpe maximal et risk parity
@@ -57,6 +67,7 @@ src/pipeline.py         Assemblage : chiffres + commentaire + pied de page de va
 src/agents.py, tasks.py Agents et tâches séquentielles
 src/llm.py              Configuration du fournisseur LLM
 reports/report_pdf.py   Markdown -> PDF
+evaluation/             Scénarios d'évaluation hors ligne et lanceur
 tests/                  Suite pytest (sans réseau)
 ```
 
