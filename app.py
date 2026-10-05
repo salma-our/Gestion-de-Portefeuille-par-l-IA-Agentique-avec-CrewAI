@@ -23,7 +23,9 @@ import streamlit as st
 import yfinance as yf
 from dotenv import load_dotenv
 
+from src.finance import allocate, annualized_volatility, inverse_volatility_weights
 from src.llm import api_key_var, llm_configured
+from src.tools import _download, _extract_close
 
 # ── Ajout du dossier courant au PYTHONPATH ──────────────────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -264,68 +266,34 @@ def compute_dashboard_data(tickers):
         return None
 
 
-def compute_allocation(tickers, budget, prices, profile="moderate"):
-    """Allocation locale (utilisée pour l'affichage des barres, indépendante des agents)."""
+def compute_allocation(tickers, budget, prices):
+    """Risk-parity allocation, same functions and 6-month window as the portfolio_allocation tool."""
+    volatilities: dict[str, float] = {}
     try:
-        data = yf.download(tickers, period="1y", auto_adjust=True, progress=False, threads=False)[
-            "Close"
-        ]
-        if data.empty:
-            raise ValueError("Données yfinance vides")
-        if len(tickers) == 1:
-            data = pd.DataFrame({tickers[0]: data})
-        returns = data.pct_change().dropna()
-        scores = {}
+        data = _extract_close(_download(list(tickers), period="6mo"), list(tickers))
         for t in tickers:
-            if t not in returns.columns:
-                continue
-            serie_returns = returns[t].dropna()
-            serie_prices = data[t].dropna()
-            if serie_returns.empty or serie_prices.empty:
-                continue
-            annual_return = (serie_prices.iloc[-1] / serie_prices.iloc[0]) - 1
-            volatility = serie_returns.std() * np.sqrt(252)
-            if volatility <= 0:
-                continue
-            if profile == "conservative":
-                score = 1 / (volatility**2)
-            elif profile == "aggressive":
-                score = (max(annual_return, 0.01) ** 2) / volatility
-            else:
-                score = max(annual_return, 0.01) / volatility
-            scores[t] = score
-        if not scores:
-            raise ValueError("Aucun score calculable")
-        total_score = sum(scores.values())
-        weights = {t: scores[t] / total_score for t in scores}
-        max_weight = {"conservative": 0.40, "moderate": 0.50, "aggressive": 0.65}.get(profile, 0.50)
-        weights = {t: min(w, max_weight) for t, w in weights.items()}
-        total_w = sum(weights.values())
-        weights = {t: w / total_w for t, w in weights.items()}
+            if t in data.columns:
+                vol = annualized_volatility(data[t].dropna().pct_change().dropna())
+                if vol > 0:
+                    volatilities[t] = vol
     except (ValueError, KeyError, IndexError, ZeroDivisionError):
-        logger.exception("Allocation scoring failed, falling back to equal weights")
-        n = len(tickers)
-        weights = {t: 1 / n for t in tickers}
-    alloc = []
-    for t, w in weights.items():
-        montant_cible = budget * w
-        prix = prices.get(t) or 0
-        if prix > 0:
-            nb_actions = int(montant_cible // prix)
-            montant_reel = nb_actions * prix
-        else:
-            nb_actions, montant_reel = 0, 0
-        alloc.append(
-            {
-                "ticker": t,
-                "poids": round(w * 100, 1),
-                "montant": round(montant_cible, 2),
-                "prix": round(prix, 2),
-                "nb_actions": nb_actions,
-                "montant_reel": round(montant_reel, 2),
-            }
-        )
-    return alloc
+        logger.exception("Volatility computation failed")
+    weights = inverse_volatility_weights(volatilities)
+    if not weights:
+        logger.warning("No usable volatility, falling back to equal weights")
+        weights = {t: 1 / len(tickers) for t in tickers}
+    positions, _ = allocate(weights, {t: prices.get(t) or 0.0 for t in weights}, budget)
+    return [
+        {
+            "ticker": t,
+            "poids": round(p.weight * 100, 1),
+            "montant": round(p.target_amount, 2),
+            "prix": round(p.price, 2),
+            "nb_actions": p.shares,
+            "montant_reel": round(p.invested, 2),
+        }
+        for t, p in positions.items()
+    ]
 
 
 def build_rich_report(tickers, budget, profile, alloc, dashboard):
@@ -612,7 +580,7 @@ def run_analysis():
             # ── Allocation pour l'affichage visuel ──
             # (Les agents ont déjà calculé via AllocationTool ; on recalcule localement
             # pour alimenter les widgets barres/graphique de l'interface)
-            alloc = compute_allocation(tickers, budget, prices, profile)
+            alloc = compute_allocation(tickers, budget, prices)
             total_investi = sum(a["montant_reel"] for a in alloc)
             add_log(
                 "log-agent3",
@@ -656,7 +624,7 @@ def run_analysis():
         st.session_state.agent_states = ["done", "done", "running"]
 
         add_log("log-agent3", "Stratège", "Calcul allocation risk-parity…")
-        alloc = compute_allocation(tickers, budget, prices, profile)
+        alloc = compute_allocation(tickers, budget, prices)
         report = build_rich_report(tickers, budget, profile, alloc, dashboard)
 
         total_investi = sum(a["montant_reel"] for a in alloc)
