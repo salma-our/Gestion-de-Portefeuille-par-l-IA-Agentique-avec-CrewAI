@@ -4,6 +4,7 @@ from crewai import Agent
 
 from src.llm import get_llm
 from src.tools import (
+    analyze_news_sentiment,
     analyze_portfolio_risk,
     analyze_stock,
     backtest_portfolio,
@@ -12,7 +13,7 @@ from src.tools import (
 
 
 def create_agents():
-    """Crée et retourne les 3 agents du système."""
+    """Crée et retourne les 4 agents : analyste, actualités, risques, stratège."""
 
     llm = get_llm()
 
@@ -31,6 +32,27 @@ def create_agents():
             "N'INVENTEZ JAMAIS de chiffres financiers, même pour combler des lacunes."
         ),
         tools=[analyze_stock],
+        llm=llm,
+        verbose=True,
+        allow_delegation=False,
+        max_iter=2,
+        max_retry_limit=1,
+    )
+
+    # ── Agent 1b : Analyste Actualités ──────────────────────
+    analyste_actualites = Agent(
+        role="Analyste Actualités",
+        goal=(
+            "Résumer le ton des actualités récentes de chaque titre à partir des scores de "
+            "sentiment calculés par l'outil, et repérer les thèmes récurrents."
+        ),
+        backstory=(
+            "Vous êtes un analyste spécialisé dans le suivi de l'actualité financière. "
+            "⚠️ RÈGLE STRICTE : les scores de sentiment viennent de l'outil news_sentiment ; "
+            "vous ne les recalculez pas et n'inventez aucune actualité. "
+            "Si aucun titre n'est disponible, vous indiquez 'donnée indisponible'."
+        ),
+        tools=[analyze_news_sentiment],
         llm=llm,
         verbose=True,
         allow_delegation=False,
@@ -85,4 +107,4 @@ def create_agents():
         max_retry_limit=1,
     )
 
-    return analyste_marche, gestionnaire_risques, stratege_portefeuille
+    return analyste_marche, analyste_actualites, gestionnaire_risques, stratege_portefeuille

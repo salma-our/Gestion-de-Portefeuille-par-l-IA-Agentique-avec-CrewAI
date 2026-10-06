@@ -103,14 +103,14 @@ def main():
 
     # ── Création des agents et tâches ──
     print("\nInitialisation des agents...")
-    analyste, gestionnaire, stratege = create_agents()
+    analyste, actualites, gestionnaire, stratege = create_agents()
 
     print(" Création des tâches...")
-    tasks = create_tasks(analyste, gestionnaire, stratege, tickers, budget, profil)
+    tasks = create_tasks(analyste, actualites, gestionnaire, stratege, tickers, budget, profil)
 
     # ── Création et lancement du Crew ──
     crew = Crew(
-        agents=[analyste, gestionnaire, stratege],
+        agents=[analyste, actualites, gestionnaire, stratege],
         tasks=tasks,
         process=Process.sequential,  # Séquentiel : analyse → risque → stratégie
         max_rpm=20,  # free-tier rate limit

@@ -12,13 +12,14 @@ if TYPE_CHECKING:
 
 def create_tasks(
     analyste: "Agent",
+    actualites: "Agent",
     gestionnaire: "Agent",
     stratege: "Agent",
     tickers: list[str],
     budget: float,
     profil_risque: str,
 ) -> list[Task]:
-    """Crée les 3 tâches séquentielles pour le pipeline."""
+    """Crée les 4 tâches séquentielles pour le pipeline."""
 
     tickers_str = ",".join(tickers)
     tickers_display = ", ".join(tickers)
@@ -53,6 +54,27 @@ def create_tasks(
         ⚠️ INTÉGRITÉ : Si une donnée manque → indiquer "donnée indisponible", ne JAMAIS estimer
         """,
         agent=analyste,
+    )
+
+    # ─────────────────────────────────────────────
+    # Tâche 1b : Actualités et sentiment
+    # ─────────────────────────────────────────────
+    tache_actualites = Task(
+        description=f"""
+        Utilisez l'outil news_sentiment avec tickers: "{tickers_str}" pour récupérer les titres
+        récents et leurs scores de sentiment (calculés par l'outil).
+
+        Pour chaque titre boursier ({tickers_display}), résumez en 3 lignes maximum le ton général
+        des actualités et les thèmes récurrents. Recopiez les scores tels que fournis par l'outil,
+        ne les recalculez pas, et n'inventez aucune actualité. S'il n'y a aucun titre, écrivez
+        "donnée indisponible".
+        """,
+        expected_output=f"""
+        Pour chacun des titres ({tickers_display}) : le ton des actualités (positif, neutre ou
+        négatif), le score fourni par l'outil et les thèmes récurrents, en 3 lignes maximum.
+        """,
+        agent=actualites,
+        context=[tache_analyse],
     )
 
     # ─────────────────────────────────────────────
@@ -131,7 +153,7 @@ def create_tasks(
         Conclusion), sans aucun chiffre.
         """,
         agent=stratege,
-        context=[tache_analyse, tache_risque],
+        context=[tache_analyse, tache_actualites, tache_risque],
     )
 
-    return [tache_analyse, tache_risque, tache_strategie]
+    return [tache_analyse, tache_actualites, tache_risque, tache_strategie]

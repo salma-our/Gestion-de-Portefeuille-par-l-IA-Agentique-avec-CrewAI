@@ -105,6 +105,7 @@ html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
 .log-agent1 { color: #60a5fa; }
 .log-agent2 { color: #fb923c; }
 .log-agent3 { color: #3ecf8e; }
+.log-agent4 { color: #a78bfa; }
 .log-success { color: #a3e635; }
 
 .cmd-box { background: #060606; border: 1px solid #1a1a1a; border-radius: 8px; padding: 12px 16px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #60a5fa; word-break: break-all; }
@@ -125,6 +126,9 @@ hr { border-color: #1a1a1a !important; }
 
 
 # ── Initialisation session state ──────────────────────────
+N_AGENTS = 4  # analyst, news, risk, strategist
+
+
 def init_state():
     defaults = {
         "tickers": ["AAPL", "MSFT", "ASML.AS"],
@@ -132,7 +136,7 @@ def init_state():
         "profile": "moderate",
         "running": False,
         "done": False,
-        "agent_states": ["idle", "idle", "idle"],
+        "agent_states": ["idle"] * N_AGENTS,
         "logs": [],
         "alloc_data": None,
         "report_text": None,
@@ -166,11 +170,12 @@ PROFILE_TEXT = {
 # Noms et classes CSS des agents
 AGENT_ROLES_IDX = {
     "Analyste de Marché": 0,
-    "Gestionnaire des Risques": 1,
-    "Stratège de Portefeuille": 2,
+    "Analyste Actualités": 1,
+    "Gestionnaire des Risques": 2,
+    "Stratège de Portefeuille": 3,
 }
-LOG_CLASSES = ["log-agent1", "log-agent2", "log-agent3"]
-LOG_NAMES = ["Analyste", "Risques", "Stratège"]
+LOG_CLASSES = ["log-agent1", "log-agent4", "log-agent2", "log-agent3"]
+LOG_NAMES = ["Analyste", "Actualités", "Risques", "Stratège"]
 
 
 def now_str():
@@ -491,7 +496,7 @@ def run_analysis():
     st.session_state.backtest = None
     st.session_state.pdf_bytes = None
     st.session_state.start_time = time.time()
-    st.session_state.agent_states = ["idle", "idle", "idle"]
+    st.session_state.agent_states = ["idle"] * N_AGENTS
 
     tickers = st.session_state.tickers
     budget = st.session_state.budget
@@ -529,7 +534,7 @@ def run_analysis():
 
             def step_callback(step):
                 """Appelé à chaque étape (action ou réponse finale) d'un agent."""
-                idx = min(task_idx[0], 2)
+                idx = min(task_idx[0], N_AGENTS - 1)
                 st.session_state.agent_states[idx] = "running"
                 if isinstance(step, AgentAction):
                     tool_input = str(step.tool_input)[:80]
@@ -546,18 +551,20 @@ def run_analysis():
                 st.session_state.agent_states[idx] = "done"
                 add_log(LOG_CLASSES[idx], LOG_NAMES[idx], "Tâche complétée ✓")
                 task_idx[0] = idx + 1
-                if idx + 1 < 3:
+                if idx + 1 < N_AGENTS:
                     st.session_state.agent_states[idx + 1] = "running"
 
             # Initialisation des agents et tâches
             add_log("log-system", "Système", "Initialisation des agents CrewAI + LLM…")
-            st.session_state.agent_states = ["running", "idle", "idle"]
+            st.session_state.agent_states = ["running"] + ["idle"] * (N_AGENTS - 1)
 
-            analyste, gestionnaire, stratege = create_agents()
-            tasks = create_tasks(analyste, gestionnaire, stratege, tickers, budget, profile)
+            analyste, actualites, gestionnaire, stratege = create_agents()
+            tasks = create_tasks(
+                analyste, actualites, gestionnaire, stratege, tickers, budget, profile
+            )
 
             crew = Crew(
-                agents=[analyste, gestionnaire, stratege],
+                agents=[analyste, actualites, gestionnaire, stratege],
                 tasks=tasks,
                 process=Process.sequential,
                 max_rpm=20,
@@ -613,7 +620,7 @@ def run_analysis():
             if pdf_bytes:
                 add_log("log-agent3", "Stratège", "Rapport PDF généré ✓")
 
-            st.session_state.agent_states = ["done", "done", "done"]
+            st.session_state.agent_states = ["done"] * N_AGENTS
             add_log("log-success", "Système", "✓ Analyse CrewAI terminée avec succès")
 
         except Exception as e:  # noqa: BLE001 - any crew failure must fall back to local mode
@@ -624,17 +631,17 @@ def run_analysis():
 
     # ── 4. Mode local (fallback) ────────────────────────────────────────
     if not use_crew:
-        st.session_state.agent_states = ["running", "idle", "idle"]
+        st.session_state.agent_states = ["running", "idle", "idle", "idle"]
         add_log("log-agent1", "Analyste", "Calcul performances & volatilité…")
         if dashboard and dashboard.get("summary") is not None:
             add_log("log-agent1", "Analyste", "Indicateurs calculés ✓")
-        st.session_state.agent_states = ["done", "running", "idle"]
+        st.session_state.agent_states = ["done", "idle", "running", "idle"]
 
         add_log("log-agent2", "Risques", "Analyse Sharpe, drawdown, corrélation…")
         if dashboard and dashboard.get("corr") is not None:
             add_log("log-agent2", "Risques", "Matrice de corrélation construite ✓")
         add_log("log-agent2", "Risques", f"Profil {profile} → cohérence vérifiée ✓")
-        st.session_state.agent_states = ["done", "done", "running"]
+        st.session_state.agent_states = ["done", "idle", "done", "running"]
 
         add_log("log-agent3", "Stratège", "Calcul allocation risk-parity…")
         alloc = compute_allocation(tickers, budget, prices)
@@ -655,7 +662,7 @@ def run_analysis():
         st.session_state.report_text = report
         st.session_state.alloc_data = alloc
         st.session_state.pdf_bytes = pdf_bytes
-        st.session_state.agent_states = ["done", "done", "done"]
+        st.session_state.agent_states = ["done", "idle", "done", "done"]
         add_log("log-success", "Système", "✓ Analyse locale terminée")
 
     st.session_state.running = False
@@ -811,6 +818,7 @@ with left:
     st.markdown("**Pipeline des agents**")
     AGENTS = [
         ("🔭", "Analyste de marché", "Prix, fondamentaux, variation", "log-agent1"),
+        ("📰", "Analyste actualités", "Titres récents, sentiment", "log-agent4"),
         ("🛡", "Gestionnaire des risques", "Sharpe, drawdown, corrélation", "log-agent2"),
         ("🏆", "Stratège de portefeuille", "Allocation optimale + rapport IA", "log-agent3"),
     ]
