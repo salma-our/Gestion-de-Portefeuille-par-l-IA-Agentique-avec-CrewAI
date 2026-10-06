@@ -8,8 +8,12 @@ import functools
 import json
 import logging
 import time
+import xml.etree.ElementTree as ET
+from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 
 import pandas as pd
+import requests
 import yfinance as yf
 from crewai.tools import tool
 
@@ -23,12 +27,15 @@ from src.finance import (
     max_drawdown,
     sharpe_ratio,
 )
+from src.sentiment import NewsItem, aggregate, score_headline
 
 logger = logging.getLogger(__name__)
 
 # Raw outputs of every tool call in the current run; used to validate the final report.
 TOOL_OUTPUTS: list[str] = []
 
+NEWS_WINDOW_DAYS = 30
+NEWS_FETCH_LIMIT = 10
 BASE_CURRENCY = "EUR"
 BENCHMARK = "^GSPC"
 BACKTEST_LOOKBACK = 252
@@ -386,4 +393,97 @@ def backtest_portfolio(tickers: str, years: int = 3) -> str:
     }
     if "Benchmark" not in summary.index:
         result["benchmark"] = "donnée indisponible"
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+def _yahoo_news(ticker: str, limit: int) -> list[NewsItem]:
+    """Headlines from Yahoo's search endpoint (Ticker.news is currently empty)."""
+    try:
+        raw = yf.Search(ticker, news_count=limit).news
+    except Exception as exc:  # noqa: BLE001 - yfinance raises many unrelated types
+        logger.warning("Yahoo news failed for %s: %s", ticker, exc)
+        return []
+    items = []
+    for entry in raw:
+        title, ts = entry.get("title"), entry.get("providerPublishTime")
+        if title and ts:
+            published = datetime.fromtimestamp(ts, UTC).date()
+            items.append(NewsItem(title, entry.get("publisher") or "Yahoo Finance", published))
+    return items
+
+
+def _rss_news(ticker: str, limit: int) -> list[NewsItem]:
+    """Fallback: Google News RSS search for the ticker."""
+    params = {"q": f"{ticker} stock", "hl": "en-US", "gl": "US", "ceid": "US:en"}
+    try:
+        response = requests.get("https://news.google.com/rss/search", params=params, timeout=10)
+        response.raise_for_status()
+        entries = ET.fromstring(response.content).findall("./channel/item")
+    except (requests.RequestException, ET.ParseError) as exc:
+        logger.warning("RSS news failed for %s: %s", ticker, exc)
+        return []
+    items = []
+    for entry in entries[:limit]:
+        title, pub_date = entry.findtext("title"), entry.findtext("pubDate")
+        source = entry.findtext("source") or "Google News"
+        if not title or not pub_date:
+            continue
+        title = title.removesuffix(f" - {source}")
+        published = parsedate_to_datetime(pub_date).astimezone(UTC).date()
+        items.append(NewsItem(title, source, published))
+    return items
+
+
+def _fetch_news(ticker: str, limit: int = NEWS_FETCH_LIMIT, days: int = NEWS_WINDOW_DAYS):
+    """Recent unique headlines (newest first), Yahoo first and RSS as a fallback."""
+    cutoff = (datetime.now(UTC) - timedelta(days=days)).date()
+    items = _yahoo_news(ticker, limit) or _rss_news(ticker, limit)
+    unique = {item.title: item for item in items if item.published >= cutoff}
+    return sorted(unique.values(), key=lambda i: i.published, reverse=True)[:limit]
+
+
+def _pct(value: float | None) -> str:
+    return "N/A" if value is None else f"{round(value * 100, 1)}%"
+
+
+# Tool 5: News sentiment
+@tool("news_sentiment")
+@_record
+def analyze_news_sentiment(tickers: str, max_headlines: int = 3) -> str:
+    """
+    Fetch recent news headlines per ticker and score their sentiment with a finance lexicon.
+    Scores are computed by Python in [-1, 1]; the language model must not score or recount.
+
+    Args:
+        tickers: Stock symbols separated by commas, e.g., AAPL,MSFT
+        max_headlines: Number of latest headlines to list per ticker
+
+    Returns:
+        JSON string with the aggregate score and latest headlines for each ticker
+    """
+    ticker_list = [t.strip().upper() for t in tickers.split(",")]
+    per_ticker = {}
+    for ticker in ticker_list:
+        scored = [(item, score_headline(item.title)) for item in _fetch_news(ticker)]
+        agg = aggregate([score for _, score in scored])
+        per_ticker[ticker] = {
+            "headlines_count": agg["count"],
+            "mean_score": "N/A" if agg["mean"] is None else round(agg["mean"], 2),
+            "positive_share": _pct(agg["positive_share"]),
+            "negative_share": _pct(agg["negative_share"]),
+            "latest": [
+                {
+                    "title": item.title,
+                    "publisher": item.publisher,
+                    "date": item.published.isoformat(),
+                    "score": round(score, 2),
+                }
+                for item, score in scored[:max_headlines]
+            ],
+        }
+    result = {
+        "window_days": NEWS_WINDOW_DAYS,
+        "scoring": "finance-lexicon headline score in [-1, 1]; mean over headlines",
+        "tickers": per_ticker,
+    }
     return json.dumps(result, ensure_ascii=False, indent=2)

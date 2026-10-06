@@ -144,3 +144,81 @@ def test_allocation_falls_back_when_fx_unavailable(monkeypatch):
     assert (
         tools.calculate_optimal_allocation.run(tickers="AAA", budget=1000.0) == tools.FALLBACK_MSG
     )
+
+
+# ---- news sentiment tool ----
+def _item(title, days_ago=1, publisher="Wire"):
+    from datetime import UTC, datetime, timedelta
+
+    from src.sentiment import NewsItem
+
+    return NewsItem(title, publisher, (datetime.now(UTC) - timedelta(days=days_ago)).date())
+
+
+def test_news_tool_scores_and_aggregates(monkeypatch):
+    items = [
+        _item("Apple profit surges", 1),
+        _item("Apple faces antitrust probe", 2),
+        _item("Apple event", 3),
+    ]
+    monkeypatch.setattr(tools, "_fetch_news", lambda *a, **k: items)
+    out = json.loads(tools.analyze_news_sentiment.run(tickers="AAPL", max_headlines=2))
+    aapl = out["tickers"]["AAPL"]
+    assert aapl["headlines_count"] == 3 and aapl["mean_score"] == 0.0
+    assert aapl["positive_share"] == "33.3%" and aapl["negative_share"] == "33.3%"
+    assert [h["score"] for h in aapl["latest"]] == [1.0, -1.0]  # only the 2 latest, newest first
+
+
+def test_news_tool_reports_na_without_headlines(monkeypatch):
+    monkeypatch.setattr(tools, "_fetch_news", lambda *a, **k: [])
+    aapl = json.loads(tools.analyze_news_sentiment.run(tickers="AAPL"))["tickers"]["AAPL"]
+    assert aapl["headlines_count"] == 0 and aapl["mean_score"] == "N/A" and aapl["latest"] == []
+
+
+def test_yahoo_news_parsing(monkeypatch):
+    class FakeSearch:
+        def __init__(self, ticker, news_count):
+            self.news = [
+                {"title": "Good news", "publisher": "WSJ", "providerPublishTime": 1_790_000_000},
+                {"title": None, "providerPublishTime": 1_790_000_000},
+                {"title": "No date"},
+            ]
+
+    monkeypatch.setattr(tools.yf, "Search", FakeSearch)
+    items = tools._yahoo_news("AAPL", 5)
+    assert [(i.title, i.publisher) for i in items] == [("Good news", "WSJ")]
+
+
+def test_yahoo_news_failure_returns_empty(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(tools.yf, "Search", boom)
+    assert tools._yahoo_news("AAPL", 5) == []
+
+
+def test_rss_news_parsing_and_publisher_suffix(monkeypatch):
+    xml = (
+        b"<rss><channel><item><title>Apple soars - Barchart</title>"
+        b"<pubDate>Sat, 03 Oct 2026 18:30:02 GMT</pubDate><source>Barchart</source></item>"
+        b"<item><title>No date</title></item></channel></rss>"
+    )
+
+    class FakeResponse:
+        content = xml
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(tools.requests, "get", lambda *a, **k: FakeResponse())
+    items = tools._rss_news("AAPL", 5)
+    assert len(items) == 1 and items[0].title == "Apple soars" and items[0].publisher == "Barchart"
+    assert items[0].published.isoformat() == "2026-10-03"
+
+
+def test_fetch_news_falls_back_to_rss_filters_old_and_dedupes(monkeypatch):
+    monkeypatch.setattr(tools, "_yahoo_news", lambda *a, **k: [])
+    rss = [_item("Fresh", 1), _item("Fresh", 2), _item("Ancient", 90), _item("Older fresh", 5)]
+    monkeypatch.setattr(tools, "_rss_news", lambda *a, **k: rss)
+    titles = [i.title for i in tools._fetch_news("AAPL", limit=10, days=30)]
+    assert titles == ["Fresh", "Older fresh"]
