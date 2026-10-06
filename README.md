@@ -3,7 +3,7 @@
 [Français](README.fr.md)
 
 Multi-agent portfolio analysis built with **CrewAI**, an LLM (Groq free tier by default) and **yfinance**.
-Three specialised agents analyse a set of stocks, assess risk, and write an allocation report that includes a
+Four specialised agents analyse a set of stocks, read the news, assess risk, and write an allocation report that includes a
 walk-forward backtest against the S&P 500.
 
 > **Design rule — the LLM never computes a number.** Every figure in a report comes from tested Python
@@ -14,14 +14,15 @@ walk-forward backtest against the S&P 500.
 ## How it works
 
 ```
-[Market Analyst] ──► [Risk Manager] ──► [Portfolio Strategist] ──► reports/rapport_portefeuille.md/.pdf
- stock_analysis       portfolio_risk      portfolio_allocation
-                                          portfolio_backtest
+[Market Analyst] ──► [News Analyst] ──► [Risk Manager] ──► [Portfolio Strategist] ──► reports/rapport_portefeuille.md/.pdf
+ stock_analysis       news_sentiment     portfolio_risk      portfolio_allocation
+                                                              portfolio_backtest
 ```
 
 | Agent | Tool(s) | Output |
 |---|---|---|
 | Market Analyst | `stock_analysis` | Price, P/E, beta, dividend, 52-week range |
+| News Analyst | `news_sentiment` | Recent headlines (Yahoo, Google News RSS fallback) scored with a finance lexicon |
 | Risk Manager | `portfolio_risk` | Volatility, Sharpe, max drawdown, correlations |
 | Portfolio Strategist | `portfolio_allocation`, `portfolio_backtest` | Risk-parity allocation in whole shares, strategy backtest |
 
@@ -32,11 +33,17 @@ result as a footer: required sections present, every financial number traceable 
 missing data acknowledged, allocation consistent with the budget, and no figure in the LLM narrative.
 Prices are converted to EUR with Yahoo FX rates computed in Python.
 
+### News sentiment
+
+Headlines of the last 30 days are scored by Python with a finance word lexicon (negations handled): a score
+in [-1, 1] per headline, averaged per ticker. It is a coarse signal, not a model, and Yahoo's search sometimes returns
+articles that merely mention the ticker. The LLM never scores or recounts headlines.
+
 ### Evaluation
 
-`python -m evaluation.run` replays 12 scenarios offline (deterministic synthetic market, fixed narrative, no
+`python -m evaluation.run` replays 14 scenarios offline (deterministic synthetic market, fixed narrative, no
 LLM): one invalid ticker, all tickers invalid, a single ticker, a budget below one share, a zero or huge budget,
-short price history, mixed currencies (USD/EUR/GBp), and three misbehaving narratives (invented return,
+short price history, no recent news, very negative news, mixed currencies (USD/EUR/GBp), and three misbehaving narratives (invented return,
 invented FX rate, missing conclusion) that the guardrails must reject. Each scenario checks that the pipeline
 does not crash, that the guardrail verdict is the expected one, that missing blocks are flagged as
 `donnée indisponible`, and that the allocation never exceeds the budget. The same scenarios run in `pytest`.

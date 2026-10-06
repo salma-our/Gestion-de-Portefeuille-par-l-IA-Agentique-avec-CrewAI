@@ -3,7 +3,7 @@
 [English](README.md)
 
 Analyse de portefeuille multi-agents avec **CrewAI**, un LLM (palier gratuit Groq par défaut) et **yfinance**.
-Trois agents spécialisés analysent des actions, évaluent le risque et rédigent un rapport d'allocation incluant
+Quatre agents spécialisés analysent des actions, lisent l'actualité, évaluent le risque et rédigent un rapport d'allocation incluant
 un backtest walk-forward face au S&P 500.
 
 > **Règle de conception : le LLM ne calcule jamais un chiffre.** Tous les chiffres d'un rapport viennent de
@@ -14,14 +14,15 @@ un backtest walk-forward face au S&P 500.
 ## Fonctionnement
 
 ```
-[Analyste de marché] ──► [Gestionnaire des risques] ──► [Stratège] ──► reports/rapport_portefeuille.md/.pdf
- stock_analysis            portfolio_risk                portfolio_allocation
-                                                         portfolio_backtest
+[Analyste de marché] ──► [Analyste actualités] ──► [Gestionnaire des risques] ──► [Stratège] ──► reports/rapport_portefeuille.md/.pdf
+ stock_analysis            news_sentiment            portfolio_risk                portfolio_allocation
+                                                                                      portfolio_backtest
 ```
 
 | Agent | Outil(s) | Résultat |
 |---|---|---|
 | Analyste de marché | `stock_analysis` | Prix, P/E, bêta, dividende, plus haut/bas 52 semaines |
+| Analyste actualités | `news_sentiment` | Titres récents (Yahoo, RSS Google Actualités en secours) notés avec un lexique financier |
 | Gestionnaire des risques | `portfolio_risk` | Volatilité, Sharpe, drawdown max, corrélations |
 | Stratège de portefeuille | `portfolio_allocation`, `portfolio_backtest` | Allocation risk-parity en actions entières, backtest des stratégies |
 
@@ -32,11 +33,17 @@ résultat en pied de page : sections obligatoires présentes, chaque chiffre tra
 données manquantes signalées, allocation cohérente avec le budget, et aucun chiffre dans le commentaire du LLM.
 Les prix sont convertis en EUR avec les taux de change Yahoo, calculés en Python.
 
+### Sentiment des actualités
+
+Les titres des 30 derniers jours sont notés par Python avec un lexique financier (négations gérées) : un score
+dans [-1, 1] par titre, moyenné par ticker. C'est un signal grossier, pas un modèle, et la recherche Yahoo renvoie
+parfois des articles qui ne font que mentionner le ticker. Le LLM ne note ni ne recompte jamais les titres.
+
 ### Évaluation
 
-`python -m evaluation.run` rejoue 12 scénarios hors ligne (marché synthétique déterministe, commentaire fixe,
+`python -m evaluation.run` rejoue 14 scénarios hors ligne (marché synthétique déterministe, commentaire fixe,
 sans LLM) : un ticker invalide, tous les tickers invalides, un seul titre, un budget inférieur au prix d'une
-action, un budget nul ou énorme, un historique trop court, des devises mixtes (USD/EUR/GBp) et trois commentaires
+action, un budget nul ou énorme, un historique trop court, aucune actualité récente, des actualités très négatives, des devises mixtes (USD/EUR/GBp) et trois commentaires
 fautifs (rendement inventé, taux de change inventé, conclusion absente) que les garde-fous doivent rejeter.
 Chaque scénario vérifie l'absence de plantage, le verdict attendu des garde-fous, le signalement des blocs
 manquants (`donnée indisponible`) et que l'allocation ne dépasse jamais le budget. Les mêmes scénarios
