@@ -20,6 +20,7 @@ class Facts:
     risk: dict[str, Any] | None
     allocation: dict[str, Any] | None
     backtest: dict[str, Any] | None
+    news: dict[str, Any] | None = None
 
 
 def _text(value: Any) -> str:
@@ -147,6 +148,38 @@ def render_backtest(facts: Facts) -> str:
     return out
 
 
+def render_news(facts: Facts) -> str:
+    out = "## 5. Actualités et sentiment\n\n"
+    tickers = facts.news.get("tickers") if facts.news else None
+    if not tickers or not any(v["headlines_count"] for v in tickers.values()):
+        return out + f"Actualités et sentiment : {MISSING} (aucun titre récent)."
+    rows = [
+        [
+            t,
+            _text(v["headlines_count"]),
+            _text(v["mean_score"]),
+            _text(v["positive_share"]),
+            _text(v["negative_share"]),
+        ]
+        for t, v in tickers.items()
+    ]
+    headers = ["Ticker", "Titres analysés", "Score moyen", "Titres positifs", "Titres négatifs"]
+    out += _table(headers, rows)
+    out += (
+        "\n\n*Score lexical de chaque titre dans [-1 ; 1], calculé par Python "
+        "(lexique financier) ; ce n'est pas un avis du LLM.*"
+    )
+    lines = [
+        f"- **{t}** — {h['title'].replace('|', '/')} ({h['publisher']}, {h['date']}) : "
+        f"score {_text(h['score'])}"
+        for t, v in tickers.items()
+        for h in v["latest"]
+    ]
+    if lines:
+        out += "\n\n**Derniers titres**\n\n" + "\n".join(lines)
+    return out
+
+
 def build_report(facts: Facts, narrative: str, now: datetime) -> str:
     """Assemble numeric sections (from tools) and the LLM's qualitative narrative."""
     profile = PROFILE_LABELS.get(facts.profile, facts.profile)
@@ -162,7 +195,8 @@ def build_report(facts: Facts, narrative: str, now: datetime) -> str:
         render_risk(facts),
         render_allocation(facts),
         render_backtest(facts),
-        "## 5. Analyse et recommandations\n\n" + commentary,
+        render_news(facts),
+        "## 6. Analyse et recommandations\n\n" + commentary,
         "*Projet éducatif. Ne constitue pas un conseil en investissement.*",
     ]
     return "\n\n".join(sections) + "\n"

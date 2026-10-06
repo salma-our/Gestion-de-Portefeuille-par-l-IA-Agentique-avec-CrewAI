@@ -3,6 +3,7 @@
 import zlib
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
+from datetime import date
 from typing import Any
 from unittest.mock import patch
 
@@ -10,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from src import tools
+from src.sentiment import NewsItem
 
 PERIOD_ROWS = {"5d": 5, "1mo": 22, "6mo": 126, "1y": 252, "2y": 504, "3y": 756}
 FX_TO_EUR = {"EUR": 1.0, "USD": 0.9, "GBP": 1.15, "GBp": 0.0115}
@@ -54,6 +56,7 @@ def patched_market(
     invalid: frozenset[str] = frozenset(),
     currencies: dict[str, str] | None = None,
     history_days: int = 800,
+    news_mode: str = "default",
 ) -> Iterator[None]:
     """Replace every network access of src.tools with deterministic synthetic data."""
     currencies = currencies or {}
@@ -68,6 +71,20 @@ def patched_market(
         frame = pd.DataFrame({t: _prices(t, index) for t in valid})
         return pd.concat({"Close": frame}, axis=1)
 
+    def fetch_news(ticker: str, limit: int = 10, days: int = 30) -> list[NewsItem]:
+        if news_mode == "none" or ticker in invalid:
+            return []
+        day = date(2026, 10, 1)
+        if news_mode == "negative":
+            titles = [
+                f"{ticker} plunges after fraud probe",
+                f"{ticker} faces lawsuit and recall",
+                f"{ticker} warns of weak demand",
+            ]
+        else:
+            titles = [f"{ticker} profit beats estimates", f"{ticker} faces regulatory probe"]
+        return [NewsItem(title, "Test Wire", day) for title in titles]
+
     class Ticker(FakeTicker):
         pass
 
@@ -75,6 +92,7 @@ def patched_market(
 
     with ExitStack() as stack:
         stack.enter_context(patch.object(tools, "_download", download))
+        stack.enter_context(patch.object(tools, "_fetch_news", fetch_news))
         stack.enter_context(patch.object(tools, "_currency", lambda t: currencies.get(t, "EUR")))
         stack.enter_context(patch.object(tools, "_fx_to_base", lambda c, b="EUR": FX_TO_EUR[c]))
         stack.enter_context(patch.object(tools.yf, "Ticker", Ticker))

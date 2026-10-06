@@ -5,7 +5,14 @@ import pytest
 
 from src import pipeline
 from src.guardrails import validate_report
-from src.report_builder import MISSING, Facts, build_report, render_allocation, render_stocks
+from src.report_builder import (
+    MISSING,
+    Facts,
+    build_report,
+    render_allocation,
+    render_news,
+    render_stocks,
+)
 
 NOW = datetime(2026, 10, 5, 18, 9)
 NARRATIVE = (
@@ -100,6 +107,41 @@ BACKTEST = {
 }
 
 
+NO_NEWS = {
+    "headlines_count": 0,
+    "mean_score": "N/A",
+    "positive_share": "N/A",
+    "negative_share": "N/A",
+    "latest": [],
+}
+NEWS = {
+    "window_days": 30,
+    "tickers": {
+        "AAPL": {
+            "headlines_count": 8,
+            "mean_score": 0.25,
+            "positive_share": "37.5%",
+            "negative_share": "12.5%",
+            "latest": [
+                {
+                    "title": "Apple surges | record",
+                    "publisher": "Wire",
+                    "date": "2026-10-05",
+                    "score": 1.0,
+                },
+                {
+                    "title": "Apple faces probe",
+                    "publisher": "Wire",
+                    "date": "2026-10-04",
+                    "score": -1.0,
+                },
+            ],
+        },
+        "MSFT": NO_NEWS,
+    },
+}
+
+
 def _facts(**overrides) -> Facts:
     base = {
         "tickers": ["AAPL", "MSFT"],
@@ -109,12 +151,13 @@ def _facts(**overrides) -> Facts:
         "risk": RISK,
         "allocation": ALLOCATION,
         "backtest": BACKTEST,
+        "news": NEWS,
     }
     return Facts(**{**base, **overrides})
 
 
 def _truth(facts: Facts) -> list[str]:
-    parts = [*facts.stocks.values(), facts.risk, facts.allocation, facts.backtest]
+    parts = [*facts.stocks.values(), facts.risk, facts.allocation, facts.backtest, facts.news]
     return [json.dumps(p) for p in parts if p]
 
 
@@ -192,3 +235,24 @@ def test_finalize_report_appends_validation_footer(monkeypatch):
 def test_each_numeric_block_degrades_gracefully(missing):
     report = build_report(_facts(**{missing: None}), NARRATIVE, NOW)
     assert MISSING in report
+
+
+def test_news_section_renders_scores_headlines_and_missing_values():
+    out = render_news(_facts())
+    assert "| AAPL | 8 | 0,25 | 37,5 % | 12,5 % |" in out
+    assert f"| MSFT | 0 | {MISSING} |" in out
+    assert "Apple surges / record (Wire, 2026-10-05) : score 1,0" in out  # pipe escaped
+    assert "n'est pas un avis du LLM" in out
+
+
+@pytest.mark.parametrize("news", [None, {"tickers": {}}, {"tickers": {"AAPL": NO_NEWS}}])
+def test_news_section_without_headlines_is_flagged_missing(news):
+    assert f"Actualités et sentiment : {MISSING}" in render_news(_facts(news=news))
+
+
+def test_report_with_news_section_passes_guardrails():
+    facts = _facts()
+    report = build_report(facts, NARRATIVE, NOW)
+    assert "## 5. Actualités et sentiment" in report
+    assert "## 6. Analyse et recommandations" in report
+    assert validate_report(report, _truth(facts), facts.budget, NARRATIVE).passed

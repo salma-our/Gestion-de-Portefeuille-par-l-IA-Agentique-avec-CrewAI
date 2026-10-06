@@ -5,6 +5,7 @@ from typing import Any
 
 from src.report_builder import Facts
 from src.tools import (
+    analyze_news_sentiment,
     analyze_portfolio_risk,
     analyze_stock,
     backtest_portfolio,
@@ -32,4 +33,5 @@ def collect_facts(tickers: list[str], budget: float, profile: str) -> Facts:
         risk=_parse(analyze_portfolio_risk.run(tickers=joined, period="1y")),
         allocation=_parse(calculate_optimal_allocation.run(tickers=joined, budget=budget)),
         backtest=_parse(backtest_portfolio.run(tickers=joined, years=3)),
+        news=_parse(analyze_news_sentiment.run(tickers=joined, max_headlines=3)),
     )

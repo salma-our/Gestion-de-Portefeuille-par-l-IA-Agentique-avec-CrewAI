@@ -1,5 +1,6 @@
 """Evaluation scenarios: the report pipeline must stay honest in every situation."""
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -20,6 +21,7 @@ MISSING_MARKERS = {
     "risk": "Métriques de risque : donnée indisponible",
     "allocation": "Allocation et cash restant : donnée indisponible",
     "backtest": "Backtest : donnée indisponible",
+    "news": "Actualités et sentiment : donnée indisponible",
 }
 
 
@@ -34,10 +36,12 @@ class Scenario:
     invalid: frozenset[str] = frozenset()
     currencies: dict[str, str] = field(default_factory=dict)
     history_days: int = 800
+    news_mode: str = "default"
     narrative: str = NEUTRAL_NARRATIVE
     expected_missing: frozenset[str] = frozenset()
     expect_valid: bool = True
     expect_zero_investment: bool = False
+    expect_negative_sentiment: bool = False
 
 
 @dataclass(frozen=True)
@@ -59,7 +63,7 @@ SCENARIOS = [
         "all_tickers_invalid",
         ["XXXX", "YYYY"],
         invalid=frozenset({"XXXX", "YYYY"}),
-        expected_missing=frozenset({"risk", "allocation", "backtest"}),
+        expected_missing=frozenset({"risk", "allocation", "backtest", "news"}),
     ),
     Scenario("single_ticker", ["AAPL"]),
     Scenario("budget_below_one_share", ["AAPL", "MSFT"], budget=1.0, expect_zero_investment=True),
@@ -70,6 +74,12 @@ SCENARIOS = [
         ["AAPL", "MSFT"],
         history_days=100,
         expected_missing=frozenset({"backtest"}),
+    ),
+    Scenario(
+        "no_recent_news", ["AAPL", "MSFT"], news_mode="none", expected_missing=frozenset({"news"})
+    ),
+    Scenario(
+        "very_negative_news", ["AAPL", "MSFT"], news_mode="negative", expect_negative_sentiment=True
     ),
     Scenario(
         "mixed_currencies",
@@ -102,7 +112,9 @@ def run_scenario(scenario: Scenario) -> ScenarioResult:
     """Run the full report pipeline offline and score it against the scenario's expectations."""
     TOOL_OUTPUTS.clear()
     try:
-        with patched_market(scenario.invalid, scenario.currencies, scenario.history_days):
+        with patched_market(
+            scenario.invalid, scenario.currencies, scenario.history_days, scenario.news_mode
+        ):
             report, validation = finalize_report(
                 scenario.narrative, scenario.tickers, scenario.budget, scenario.profile, NOW
             )
@@ -133,7 +145,26 @@ def run_scenario(scenario: Scenario) -> ScenarioResult:
         if scenario.expect_zero_investment:
             invested = f"Total investi** : {0:.2f}".replace(".", ",")
             checks.append(Check("nothing_invested", invested in report, "expected 0 invested"))
+    if scenario.expect_negative_sentiment:
+        means = _news_means()
+        checks.append(
+            Check("sentiment_is_negative", bool(means) and all(m < 0 for m in means), str(means))
+        )
     return ScenarioResult(scenario.name, checks)
+
+
+def _news_means() -> list[float]:
+    """Mean sentiment scores found in the recorded news_sentiment tool outputs."""
+    means = []
+    for output in TOOL_OUTPUTS:
+        try:
+            data = json.loads(output)
+        except json.JSONDecodeError:
+            continue
+        for ticker_data in data.get("tickers", {}).values() if isinstance(data, dict) else []:
+            if isinstance(ticker_data, dict) and isinstance(ticker_data.get("mean_score"), float):
+                means.append(ticker_data["mean_score"])
+    return means
 
 
 def run_all() -> list[ScenarioResult]:
